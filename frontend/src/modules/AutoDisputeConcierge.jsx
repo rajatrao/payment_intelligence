@@ -122,8 +122,6 @@ export default function AutoDisputeConcierge() {
   const [sampleTxnId, setSampleTxnId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [samples, setSamples] = useState([]);
-  const [scores, setScores] = useState(null);
-  const [scoring, setScoring] = useState(false);
   const [file, setFile] = useState(null);
   const [evidence, setEvidence] = useState(null);
   const [matching, setMatching] = useState(false);
@@ -196,19 +194,6 @@ export default function AutoDisputeConcierge() {
     if (!sample) return;
     setSelectedId(sampleTxnId);
     await loadSample(sample);
-  };
-
-  const scoreAll = async () => {
-    if (!txn) return;
-    setScoring(true);
-    setError(null);
-    try {
-      setScores(await api.sampleScores(txn.id));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setScoring(false);
-    }
   };
 
   // Step 1: score the file against every disputed transaction.
@@ -388,10 +373,7 @@ export default function AutoDisputeConcierge() {
             transactions={transactions}
             txn={txn}
             loadedName={file?.name}
-            scores={scores}
-            scoring={scoring}
             onLoad={loadSample}
-            onScore={scoreAll}
             disabled={running}
           />
         </section>

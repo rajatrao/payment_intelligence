@@ -62,9 +62,9 @@ PDF stages live.
 
 ### Sample evidence library
 
-Eight generated documents (six PDFs and two JPEG "photos") show the matcher working in both directions.
-**Score all vs selected transaction** runs EmbeddingGemma 2 matching of the selected transaction against every
-sample at once.
+Eight generated documents (six PDFs and two JPEG "photos") show the matcher working in both directions. Load one
+and click **Match evidence**, or select a transaction and use **Find evidence for this transaction** to search them
+all.
 
 | Sample | Type | Backs transaction |
 | --- | --- | --- |
@@ -137,7 +137,8 @@ docker compose up --build
 - The badge at the top right of the dashboard turns **green** and shows both model names.
 - Or check the API: `curl http://localhost:8000/api/health` should show `"reachable": true` with `llm_model` and
   `embed_model` filled in.
-- In the sample library, click **Score all vs selected transaction**: the matching document should score highest.
+- Select a transaction and click **Search** under **Find evidence for this transaction**: the matching document
+  should rank first.
 
 ### Troubleshooting
 
@@ -160,19 +161,17 @@ back to the embedding alone, and the package is built with a clearly labelled te
 ### Two-minute demo
 
 1. Open the **Auto-Dispute Concierge** tab.
-2. Click **Score all vs selected transaction** in the sample library: the EUROSITES Q4 invoice scores highest,
-   the decoys and other documents score low.
-3. Load the **London hotel folio** decoy and click **Match evidence**: every transaction scores WEAK and the
+2. Load the **London hotel folio** decoy and click **Match evidence**: every transaction scores WEAK and the
    file is flagged as matching no disputed transaction. Try the taxi photo or the EUROSITES Q2 invoice too.
-4. Click **Use Sample PDF**, then **Match evidence**. The EUROSITES transaction ranks first and is selected.
-5. Click **Build evidence package**. Read the letter in the preview, switch to **Package PDF**, then click
+3. Click **Use Sample PDF**, then **Match evidence**. The EUROSITES transaction ranks first and is selected.
+4. Click **Build evidence package**. Read the letter in the preview, switch to **Package PDF**, then click
    **Download Legal Chargeback Package (PDF)** or **Discard**.
-6. Load another document (for example the Datadog invoice or the Northwind photo) and match again. For the photo,
+5. Load another document (for example the Datadog invoice or the Northwind photo) and match again. For the photo,
    the match panel shows the amount and date gemma3 read from the image.
-7. Select **SQ \*NORTHWIND EVENTS** in the queue and click **Search** under **Find evidence for this transaction**:
+6. Select **SQ \*NORTHWIND EVENTS** in the queue and click **Search** under **Find evidence for this transaction**:
    Chroma shortlists stored files, gemma3 verifies them, and the receipt and its photo rank first. Click **Use** to
    load one.
-8. Click the Card Optimizer and Liquidity Guard tabs to see the lock walls.
+7. Click the Card Optimizer and Liquidity Guard tabs to see the lock walls.
 
 ## Configuration
 
@@ -224,7 +223,6 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | GET | `/api/disputes/transactions/{id}/evidence-search` | Find stored files for a transaction (Chroma shortlist, gemma3 verify) |
 | GET | `/api/disputes/samples` | Sample evidence library |
 | GET | `/api/disputes/samples/{id}` | Sample PDF or JPEG (`?download=true` to download) |
-| GET | `/api/disputes/samples/scores?transaction_id=…` | Match one transaction against every sample |
 | POST | `/api/disputes/evidence` | Step 1: match a file (`file`, or `sample_id`) against every disputed transaction |
 | GET | `/api/disputes/evidence/{evidence_id}` | Stored match results for a file |
 | POST | `/api/disputes/cases` | Step 2: build the letter and package (`transaction_id` + `evidence_id`) |

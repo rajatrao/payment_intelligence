@@ -161,27 +161,6 @@ async def list_samples():
     return {"default_sample_id": DEFAULT_SAMPLE_ID, "samples": sample_metadata()}
 
 
-@app.get("/api/disputes/samples/scores")
-async def score_samples(transaction_id: str):
-    """Match one transaction against every sample with EmbeddingGemma 2 (no letter, no PDF)."""
-    txn = get_transaction(transaction_id)
-    if not txn:
-        raise HTTPException(404, "Transaction not found")
-
-    async def score(sample: dict) -> dict:
-        doc, text, data = await _index_sample(sample)
-        fields, _ = await _fields(doc, sample["kind"], data, text)
-        m = await match_evidence(txn, doc, text, fields)
-        return {"sample_id": sample["id"], "score": m["score"], "semantic_score": m["semantic_score"],
-                "field_score": m["field_score"], "verdict": m["verdict"]}
-
-    try:
-        results = [await score(s) for s in sample_metadata()]
-    except OllamaUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
-    return {"transaction_id": transaction_id, "embedding_model": settings.embed_model, "scores": results}
-
-
 @app.get("/api/disputes/samples/{sample_id}")
 async def sample_file(sample_id: str, download: bool = False):
     """Sample document as a PDF or JPEG stream (inline, or attachment with ?download=true)."""

@@ -12,8 +12,6 @@ export const api = {
   health: () => fetch(`${BASE}/api/health`).then(json),
   transactions: () => fetch(`${BASE}/api/disputes/transactions`).then(json),
   samples: () => fetch(`${BASE}/api/disputes/samples`).then(json),
-  sampleScores: (transactionId) =>
-    fetch(`${BASE}/api/disputes/samples/scores?transaction_id=${encodeURIComponent(transactionId)}`).then(json),
   searchEvidence: (transactionId, limit = 5) =>
     fetch(`${BASE}/api/disputes/transactions/${encodeURIComponent(transactionId)}/evidence-search?limit=${limit}`).then(json),
   evidence: (evidenceId) => fetch(`${BASE}/api/disputes/evidence/${evidenceId}`).then(json),

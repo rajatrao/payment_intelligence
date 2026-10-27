@@ -109,10 +109,10 @@ flowchart TB
     pipeline --> letter --> ollama
     pipeline --> pdf
     pipeline --> store
-    routes -- "sample library + scores" --> samples
+    routes -- "sample library" --> samples
     samples --> pdf
-    routes -- "score samples" --> vstore
-    routes -- "score samples" --> matching
+    routes -- "match + evidence search" --> vstore
+    routes -- "match + evidence search" --> matching
 ```
 
 Concurrency notes
@@ -138,7 +138,8 @@ frontend/src/
 │   ├── Header.jsx              Brand, three tabs, live Ollama status badge (polls /api/health every 15 s)
 │   ├── LockWall.jsx            Blurred skeleton + lock overlay for Card Optimizer and Liquidity Guard
 │   ├── Dropzone.jsx            Drag-and-drop / click upload, PDF (text matched) or JPEG (image matched)
-│   ├── SampleLibrary.jsx       Sample documents, Load / Download, "Score all vs selected transaction"
+│   ├── SampleLibrary.jsx       Sample documents, Load / Download
+│   ├── EvidenceSearch.jsx      "Find evidence for this transaction": Chroma shortlist verified by gemma3
 │   ├── MatchResults.jsx        Step 1 result: the file ranked against every disputed transaction
 │   ├── PipelineStages.jsx      Build progress strip: letter, PDF (pending / running / done / failed)
 │   ├── MatchPanel.jsx          Score, sub-score bars, field checks, cosine heatmap
@@ -623,7 +624,6 @@ Interactive docs: http://localhost:8000/docs
 | GET | `/api/disputes/transactions/{id}/evidence-search?limit=5` | Chroma shortlist of stored files for the transaction, each read by gemma3 and matched | JSON; 503 if Ollama/model unavailable |
 | GET | `/api/disputes/transactions/{id}` | One transaction | JSON / 404 |
 | GET | `/api/disputes/samples` | Sample library metadata and default sample id | JSON |
-| GET | `/api/disputes/samples/scores?transaction_id=…` | EmbeddingGemma 2 match of one transaction against every sample (no letter or PDF) | JSON; 503 if Ollama/model unavailable |
 | GET | `/api/disputes/samples/{id}` | Sample PDF or JPEG, inline (`?download=true` for attachment) | `application/pdf` or `image/jpeg` / 404 |
 | GET | `/api/disputes/samples/{id}/text` | Extracted text of a sample | JSON |
 | GET | `/api/disputes/sample-invoice` | Alias of the EUROSITES sample | `application/pdf` |
@@ -656,7 +656,7 @@ All settings are environment variables, read in `config.py` and passed through `
 
 | Situation | Behaviour | Visible where |
 | --- | --- | --- |
-| Ollama unreachable | Match evidence and sample scoring return 503: "Ollama is unreachable at …" | Header badge red, error banner |
+| Ollama unreachable | Match evidence and evidence search return 503: "Ollama is unreachable at …" | Header badge red, error banner |
 | EmbeddingGemma 2 not installed (404) | Match returns 503: "Run: ollama pull embeddinggemma-2". No substitute embedder. | Header badge amber, error banner |
 | Evidence matches no transaction | Every transaction scores WEAK; `matched_transaction_id` is null; building returns 409 | Red "doesn't match any disputed transaction" banner, build button disabled |
 | gemma3 not installed (404) | Matching continues without field reading (PDFs: text checks; photos: embedding only); letters use the template | `extraction_error` in the match result; "Template letter" tag; PDF footer and note |
