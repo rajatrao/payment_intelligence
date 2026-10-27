@@ -26,6 +26,7 @@ Contents
 ## 1. System context
 
 Everything runs on one machine. No external services, no cloud storage, no third-party integrations.
+Chroma runs embedded inside the backend process (no separate server) and writes to a Docker volume.
 The only process outside Docker is Ollama, which runs on the host so it can use the host's GPU / Apple Silicon.
 
 ```mermaid
@@ -35,11 +36,13 @@ flowchart LR
         subgraph docker["Docker Compose: payment-intelligence"]
             fe["frontend<br/>nginx + React build<br/>:3000"]
             be["backend<br/>FastAPI + Uvicorn<br/>:8000"]
+            vol[("chroma-data volume<br/>Chroma vector store")]
         end
         ollama["Ollama<br/>:11434<br/>gemma2 · embedding model"]
     end
     user -- "HTTP :3000" --> fe
     fe -- "/api/* reverse proxy" --> be
+    be -- "embedded client<br/>/data/chroma" --> vol
     be -- "host.docker.internal:11434<br/>/api/embed · /api/generate" --> ollama
 ```
 
@@ -48,13 +51,14 @@ flowchart LR
 | Service | Image / build | Port (host:container) | Responsibility |
 | --- | --- | --- | --- |
 | `frontend` | `frontend/Dockerfile`: `node:20-alpine` build stage, `nginx:1.27-alpine` runtime | `3000:80` | Serves the static React bundle; proxies `/api/*` to `backend:8000` so the PDF iframe and downloads are same-origin (no CORS). 16 MB upload limit, 300 s proxy read timeout. |
-| `backend` | `backend/Dockerfile`: `python:3.12-slim` | `8000:8000` | REST API, async dispute pipeline, PDF generation, mock data. Health-checked at `/api/health`. |
+| `backend` | `backend/Dockerfile`: `python:3.12-slim` | `8000:8000` | REST API, async dispute pipeline, PDF generation, mock data, embedded Chroma vector store. Health-checked at `/api/health`. |
+| `chroma-data` (volume) | named Docker volume mounted at `/data/chroma` | none | Persists evidence embeddings across container restarts. `docker compose down -v` removes it. |
 | Ollama (host) | not containerised | `11434` | Local models. Reached through `host.docker.internal` (`extra_hosts: host-gateway` makes this work on Linux as well as Docker Desktop). |
 
 Startup order: `frontend` waits for `backend` to report healthy.
 
-State: the backend is a **single process with in-memory state**. Restarting the container clears all dispute
-cases and generated packages. See [section 7](#7-data-model-and-schemas).
+State: the backend is a **single process**. Dispute cases and generated packages live in memory and are cleared
+on restart; evidence embeddings persist in Chroma on the `chroma-data` volume. See [section 7](#7-data-model-and-schemas).
 
 ## 3. Backend components
 
@@ -70,10 +74,11 @@ backend/app/
 └── services/
     ├── extraction.py       File-type detection, PDF text layer (pypdf, no OCR), chunking
     ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 text + image embeddings (single model), gemma2 generation
-    ├── matching.py         Facet × chunk cosine matrix, field checks, composite score
+    ├── vector_store.py     Chroma collection "evidence": embed each document once, store and reuse its vectors
+    ├── matching.py         Facet × stored-chunk cosine matrix, field checks, composite score
     ├── letter.py           Compliance-officer prompt, filler scrubbing, offline template letter
     ├── pdf_builder.py      ReportLab: EUROSITES invoice + legal chargeback package, Exhibit A merge (pypdf)
-    └── samples.py          Sample evidence library: 4 documents that back a transaction, 2 decoys
+    └── samples.py          Sample evidence library: 5 documents that back a transaction, 3 decoys
 ```
 
 ```mermaid
@@ -87,6 +92,8 @@ flowchart TB
     samples["samples.py"]
     extraction["extraction.py"]
     matching["matching.py"]
+    vstore["vector_store.py"]
+    chroma[("Chroma<br/>collection: evidence")]
     letter["letter.py"]
     ollama["ollama_client.py"]
     pdf["pdf_builder.py"]
@@ -95,12 +102,15 @@ flowchart TB
     routes --> store
     routes -- "asyncio.create_task" --> pipeline
     pipeline --> extraction
+    pipeline --> vstore --> ollama
+    vstore --> chroma
     pipeline --> matching --> ollama
     pipeline --> letter --> ollama
     pipeline --> pdf
     pipeline --> store
     routes -- "sample library + scores" --> samples
     samples --> pdf
+    routes -- "score samples" --> vstore
     routes -- "score samples" --> matching
 ```
 
@@ -109,7 +119,9 @@ Concurrency notes
 - Each `POST /api/disputes/cases` returns `202` immediately and spawns one `asyncio` task.
 - CPU-bound steps (text extraction, ReportLab rendering) run in worker threads via `asyncio.to_thread`, so the
   event loop keeps serving status polls.
-- Embedding calls for one case run concurrently, capped at 4 in flight by a semaphore.
+- Embedding inputs are sent to `/api/embed` in batches of 16. Evidence already in Chroma is not re-embedded;
+  only the five transaction facets are embedded on each match.
+- Chroma calls are synchronous but local and small (one document's records), so they run inline.
 - Task references are kept in `_TASKS` so they aren't garbage-collected mid-run.
 
 ## 4. Frontend components
@@ -181,6 +193,7 @@ sequenceDiagram
     participant FE as React (nginx)
     participant BE as FastAPI
     participant T as Pipeline task
+    participant C as Chroma (embedded)
     participant O as Ollama (host)
 
     U->>FE: Open Auto-Dispute Concierge tab
@@ -209,8 +222,16 @@ sequenceDiagram
     end
 
     T->>T: 1. PDF: extract_text (pypdf) and chunk · JPEG: no text (no OCR)
-    T->>O: 2. POST /api/embed model=embeddinggemma-2 (5 facets + N chunks, or 5 facets + 1 image)
-    O-->>T: vectors
+    T->>C: 2. get(where doc_id = sha256(file)[:32])
+    alt Not stored yet, or stored with another model
+        T->>O: POST /api/embed model=embeddinggemma-2 (N chunks, or 1 image)
+        O-->>T: evidence vectors
+        T->>C: add(ids doc_id:i, embeddings, documents, metadatas)
+    else Already stored
+        C-->>T: stored chunks + vectors
+    end
+    T->>O: POST /api/embed (5 transaction facets as queries)
+    O-->>T: facet vectors
     T->>T: cosine matrix + field checks → MatchResult
     T->>O: 3. POST /api/generate (gemma2, compliance-officer prompt)
     O-->>T: letter text
@@ -251,14 +272,15 @@ carries the error string.
 
 ### Storage today
 
-There is **no database yet**. Data lives in three places:
+There is **no case database yet**. Evidence embeddings are persisted in Chroma; everything else is in memory:
 
 | Store | Where | Lifetime |
 | --- | --- | --- |
 | Mock transactions | Python lists in `app/data/transactions/{disputes,cross_border,recurring}.py` | Static, read-only |
 | Dispute cases | `DISPUTES: dict[case_id, DisputeCase]` in `main.py` | Until process restart |
 | Generated packages | `PACKAGES: dict[case_id, bytes]` in `main.py` | Until process restart |
-| Sample documents | `_cache` in `services/samples.py`, generated lazily | Until process restart |
+| Sample documents | `_cache` in `services/samples.py`, generated lazily (byte-stable: ReportLab `invariant=1`) | Until process restart |
+| Evidence embeddings | Chroma collection `evidence` at `CHROMA_DIR` (`chroma-data` volume in Docker) | Persistent |
 
 The schemas below are the contract the code uses today. The ER diagram also shows how they map to tables if
 persistence is added later (suggested: SQLite or Postgres, PDFs on a volume or as blobs).
@@ -275,6 +297,7 @@ erDiagram
     MATCH_RESULT ||--|{ EVIDENCE_EXCERPT : "ranks"
     DISPUTE_CASE ||--o| DISPUTE_LETTER : "produces"
     DISPUTE_CASE ||--o| CHARGEBACK_PACKAGE : "renders"
+    EVIDENCE_DOCUMENT ||--|{ EMBEDDING_RECORD : "stored in Chroma as"
 
     TRANSACTION {
         string id PK "txn_9f3a71c2"
@@ -316,6 +339,17 @@ erDiagram
         string kind "pdf | jpeg"
         string method "pypdf | image (embedded directly, no OCR)"
         text text_preview "first 1500 chars"
+    }
+    EMBEDDING_RECORD {
+        string id PK "doc_id:chunk_index"
+        float_array embedding "EmbeddingGemma 2 vector"
+        text document "chunk text, or an image label"
+        string doc_id "sha256(file bytes), 32 hex chars"
+        int chunk_index
+        string kind "pdf | jpeg"
+        string filename
+        string source "upload | sample"
+        string model "embeddinggemma-2"
     }
     PIPELINE_STAGE {
         string case_id FK
@@ -362,6 +396,25 @@ erDiagram
     }
 ```
 
+### Vector store (Chroma)
+
+Implemented in `services/vector_store.py`. EmbeddingGemma 2 returns vectors and keeps nothing, so the backend
+stores them in an embedded Chroma `PersistentClient` at `CHROMA_DIR`.
+
+| Property | Value |
+| --- | --- |
+| Collection | `evidence`, cosine space (`hnsw:space: cosine`), no Chroma embedding function (vectors come from Ollama) |
+| Record | One per PDF text chunk, or one per JPEG image. Id `"{doc_id}:{chunk_index}"` |
+| Document key | `doc_id` = first 32 hex chars of the SHA-256 of the file bytes, so identical files share vectors |
+| Metadata | `doc_id`, `chunk_index`, `kind`, `filename`, `source` (`upload` or `sample`), `model` |
+| Reuse rule | Stored records are reused only if every record's `model` equals `OLLAMA_EMBED_MODEL`; otherwise they are deleted and the document is re-embedded |
+| What is not stored | Transaction facets (queries). They are embedded on each match, so editing a transaction never leaves stale vectors |
+
+Matching reads the document's stored vectors by `doc_id` and computes the facet × chunk matrix in Python. Chroma's
+similarity search isn't needed for one document at a time, but the collection is ready for cross-document search
+(for example "which stored evidence best fits this transaction") later. `/api/health` reports the record and
+document counts under `vector_store`.
+
 ### JSON shapes
 
 `DisputeCase`, as returned by `GET /api/disputes/cases/{case_id}`:
@@ -374,7 +427,8 @@ erDiagram
   "created_at": "2026-10-27T16:19:26.314176+00:00",
   "stages": {
     "extract":         { "state": "done", "at": "…", "method": "pypdf", "characters": 1532 },
-    "embed_match":     { "state": "done", "at": "…", "model": "embeddinggemma-2" },
+    "embed_match":     { "state": "done", "at": "…", "model": "embeddinggemma-2",
+                         "doc_id": "342e1037d829879d7325937bb091fb27", "vectors": "reused from Chroma" },
     "generate_letter": { "state": "done", "at": "…", "model": "gemma2:2b", "fallback": false },
     "render_pdf":      { "state": "done", "at": "…", "bytes": 9811 }
   },
@@ -383,6 +437,7 @@ erDiagram
   "match": {
     "score": 0.77, "semantic_score": 0.62, "field_score": 1.0, "verdict": "STRONG_MATCH", "note": null,
     "mode": "text", "embedding_model": "embeddinggemma-2",
+    "doc_id": "342e1037d829879d7325937bb091fb27", "vectors_cached": true,
     "facets": ["merchant", "amount", "date", "reference", "purpose"],
     "chunks": ["EUROSITES ADVERTISING LTD\nINVOICE…", "…"],
     "matrix": [[0.48, 0.31, 0.22, 0.19, 0.27], "… 5 rows × N chunks"],
@@ -435,7 +490,9 @@ flowchart LR
     txn["Transaction"] --> facets["5 facet strings<br/>merchant · amount · date · reference · purpose"]
     doc["Extracted text"] --> chunks["Chunks ≈320 chars<br/>(max 40)"]
     facets --> emb["EmbeddingGemma 2<br/>/api/embed"]
-    chunks --> emb
+    chunks --> emb2["EmbeddingGemma 2<br/>once per file"]
+    emb2 --> chroma[("Chroma")]
+    chroma --> M
     emb --> M["Cosine matrix<br/>5 × N"]
     M --> S["Semantic score<br/>mean of per-facet best,<br/>rescaled to 0..1"]
     doc --> F["Field checks<br/>amount · date · merchant · ref"]
@@ -447,8 +504,8 @@ flowchart LR
 1. **Facets.** The transaction becomes five short natural-language strings, so each can find its own best
    matching passage (the amount lives in the totals table, the merchant in the header, and so on).
 2. **Chunks.** Extracted text is split on lines into ~320-character chunks, up to 40.
-3. **Matrix.** Every facet and chunk is embedded with EmbeddingGemma 2 (the only embedding model; there is no
-   substitute), and `matrix[i][j] = cos(facet_i, chunk_j)`. Facets use the retrieval query prompt
+3. **Matrix.** Chunks are embedded with EmbeddingGemma 2 (the only embedding model; there is no substitute) once
+   per file and stored in Chroma; facets are embedded on every match. `matrix[i][j] = cos(facet_i, chunk_j)`. Facets use the retrieval query prompt
    `task: search result | query: …` and chunks the document prompt `title: none | text: …`.
 4. **Semantic score.** For each facet take its best chunk, rescale `(s − 0.2) / 0.6` clamped to 0..1, then
    average.
@@ -509,7 +566,7 @@ Interactive docs: http://localhost:8000/docs
 
 | Method | Path | Description | Response |
 | --- | --- | --- | --- |
-| GET | `/api/health` | Ollama reachability, resolved models, config | JSON |
+| GET | `/api/health` | Ollama reachability, resolved models, config, Chroma record/document counts | JSON |
 | GET | `/api/modules` | Module registry with lock state and messages | JSON |
 | GET | `/api/disputes/transactions` | All dispute transactions and the sample transaction id | JSON |
 | GET | `/api/disputes/transactions/{id}` | One transaction | JSON / 404 |
@@ -537,6 +594,7 @@ All settings are environment variables, read in `config.py` and passed through `
 | `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Reserved for Card Optimizer and Liquidity Guard |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | All Ollama calls |
 | `ALLOW_OFFLINE_FALLBACK` | `true` | Letter only: `false` fails the case instead of using the template letter |
+| `CHROMA_DIR` | `/tmp/payment_intelligence/chroma` (`/data/chroma` in Docker, on the `chroma-data` volume) | Chroma vector store |
 | `STORAGE_DIR` | `/tmp/payment_intelligence` | Reserved scratch directory |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Direct browser → backend calls in dev |
 | `VITE_API_PROXY` (frontend dev) | `http://localhost:8000` | Vite dev-server proxy target |
@@ -555,7 +613,9 @@ All settings are environment variables, read in `config.py` and passed through `
 | Malformed evidence PDF | Text extraction returns empty; Exhibit A merge is skipped, the package still renders | Stage 1 detail |
 | Wrong file type | `415` before any processing | Error banner |
 | File over 15 MB | `413` | Error banner |
-| Backend restart | All cases and packages lost | Package URL returns 404 |
+| Backend restart | All cases and packages lost; stored embeddings survive in Chroma | Package URL returns 404 |
+| `OLLAMA_EMBED_MODEL` changed | Stored vectors from the old model are ignored, deleted and re-embedded on next use | Stage 2 shows "embedded and stored in Chroma" |
+| Same file uploaded again | Vectors reused, only facets embedded | Stage 2 shows "reused from Chroma" |
 
 ## 14. Module gating (Card Optimizer and Liquidity Guard)
 
@@ -580,7 +640,8 @@ To unlock a module: add its service module and routes, remove its key from `LOCK
 
 Limitations
 
-- In-memory state only; one backend process; no auth (local demo).
+- Cases and packages are in memory (only embeddings persist); one backend process; no auth (local demo).
+- Chroma is embedded, so only one backend process should write to `CHROMA_DIR` at a time.
 - Not yet run against real gemma2 / EmbeddingGemma 2 or in Docker; development used a stand-in Ollama server.
 - The 0.6 / 0.4 weights, rescale ranges and verdict thresholds are hand-tuned, not calibrated on EmbeddingGemma 2.
 - The image-embedding request format is unconfirmed against Ollama's documentation.

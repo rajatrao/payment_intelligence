@@ -31,6 +31,8 @@ class Settings:
     allow_offline_fallback: bool = os.getenv("ALLOW_OFFLINE_FALLBACK", "true").lower() != "false"
 
     storage_dir: Path = Path(os.getenv("STORAGE_DIR", "/tmp/payment_intelligence"))
+    # Embedded Chroma database for evidence embeddings (a Docker volume in docker-compose.yml).
+    chroma_dir: Path = Path(os.getenv("CHROMA_DIR", "/tmp/payment_intelligence/chroma"))
     cors_origins: list[str] = field(default_factory=lambda: _csv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"))
 
 

@@ -80,7 +80,8 @@ def build_sample_invoice() -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm,
                             bottomMargin=16 * mm, title="EUROSITES ADVERTISING - Invoice ESA-INV-2026-0912",
-                            author="EUROSITES ADVERTISING LTD")
+                            author="EUROSITES ADVERTISING LTD",
+                            invariant=1)  # byte-stable output, so the file hashes to the same Chroma doc_id
     total = sum(a for _, a in SAMPLE_INVOICE_LINES)
     story = [
         Table([[_p("EUROSITES ADVERTISING LTD", "h1"), _p("INVOICE", "h1")],

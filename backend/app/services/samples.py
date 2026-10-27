@@ -22,7 +22,8 @@ def _document(*, merchant: str, doc_label: str, address: str, meta: str, bill_to
               extra_rows: list[tuple[str, str]] | None = None) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm,
-                            bottomMargin=16 * mm, title=f"{merchant} - {doc_label}", author=merchant)
+                            bottomMargin=16 * mm, title=f"{merchant} - {doc_label}", author=merchant,
+                            invariant=1)  # byte-stable output, so the file hashes to the same Chroma doc_id
     total = sum(a for _, a in lines)
     rows = [["Description", "Amount (USD)"]] + [[_p(d), f"{a:,.2f}"] for d, a in lines]
     rows += [[label, value] for label, value in (extra_rows or [])]

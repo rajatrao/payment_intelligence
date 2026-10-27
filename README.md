@@ -20,7 +20,7 @@ For the full blueprint (diagrams, data schemas, request flow, algorithms, API an
 ```mermaid
 flowchart LR
     A["Upload PDF / JPEG<br/>or load a sample"] --> B["1. Read evidence<br/>PDF text via pypdf · JPEG as image<br/>(no OCR)"]
-    B --> C["2. Embed & match<br/>EmbeddingGemma 2 via /api/embed<br/>cosine matrix + field checks"]
+    B --> C["2. Embed & match<br/>EmbeddingGemma 2 via /api/embed<br/>vectors stored in Chroma<br/>cosine matrix + field checks"]
     C --> D["3. Write letter<br/>Ollama gemma2"]
     D --> E["4. Build PDF<br/>ReportLab + Exhibit A"]
     E --> F["Inline preview<br/>+ Download"]
@@ -31,17 +31,20 @@ flowchart LR
    **sample evidence library** (see below).
 2. **Read.** A PDF's text layer is read with pypdf and split into chunks. A JPEG is not converted to text at all:
    there is no OCR, because EmbeddingGemma 2 embeds the image itself.
-3. **Match.** The transaction is turned into five facets (merchant, amount, date, reference, purpose). Each facet
-   and each chunk is embedded with **EmbeddingGemma 2** (`embeddinggemma-2`), and a facets × chunks
-   cosine-similarity matrix gives a semantic score. For a JPEG, the image is embedded into the same vector space
-   and compared with each facet directly. For PDFs the semantic score is
+3. **Embed and store.** Each PDF chunk, or the JPEG image itself, is embedded with **EmbeddingGemma 2**
+   (`embeddinggemma-2`). The model keeps nothing, so the vectors are saved in **Chroma**, an embedded vector
+   store kept on a Docker volume. Files are keyed by the SHA-256 of their bytes: uploading the same file again,
+   or re-scoring a sample, reuses the stored vectors instead of embedding again.
+4. **Match.** The transaction is turned into five facets (merchant, amount, date, reference, purpose), which are
+   embedded as queries on every match. A facets × chunks cosine-similarity matrix against the stored vectors gives
+   a semantic score. For a JPEG, each facet is compared with the stored image vector. For PDFs the semantic score is
    blended 60/40 with exact checks on amount, date, merchant and invoice reference, giving a score and a verdict
    (STRONG, PARTIAL or WEAK).
-4. **Letter.** `gemma2` writes a formal, aggressive chargeback letter to the card network, acting as a Senior
+5. **Letter.** `gemma2` writes a formal, aggressive chargeback letter to the card network, acting as a Senior
    Corporate Treasury Compliance Officer, with no chat filler.
-5. **Package.** ReportLab stitches the transaction summary, match evidence, letter and ranked excerpts into one
+6. **Package.** ReportLab stitches the transaction summary, match evidence, letter and ranked excerpts into one
    PDF, with the original evidence appended as Exhibit A.
-6. **Review.** The PDF appears in an inline preview next to the transaction, with a
+7. **Review.** The PDF appears in an inline preview next to the transaction, with a
    **Download Legal Chargeback Package (PDF)** button.
 
 The pipeline runs as a background task. The UI polls the case and shows each of the four stages live.
@@ -163,6 +166,7 @@ Copy `.env.example` to `.env` to override anything. The main settings:
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` (the only model used for matching; keep an image-capable tag: latest/`:740m` or `:440m`) |
 | `OLLAMA_NIMBLE_PATH` | `/v1/systemone` (reserved for Card Optimizer and Liquidity Guard) |
 | `ALLOW_OFFLINE_FALLBACK` | `true` (letter only: template letter if gemma2 is missing) |
+| `CHROMA_DIR` | `/data/chroma` in Docker (named volume `chroma-data`); `/tmp/payment_intelligence/chroma` without Docker |
 
 The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configuration).
 
@@ -180,7 +184,8 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 │       ├── main.py             routes, in-memory case store, async pipeline
 │       ├── config.py           env-driven settings
 │       ├── data/transactions/  mock transaction files: disputes, cross_border, recurring
-│       └── services/           extraction, ollama_client, matching, letter, pdf_builder, samples
+│       └── services/           extraction, ollama_client, vector_store (Chroma), matching, letter,
+│                               pdf_builder, samples
 └── frontend/                   React 18 · Vite · Tailwind CSS 3
     ├── Dockerfile              node build → nginx runtime
     ├── nginx.conf              serves the SPA, proxies /api to the backend
@@ -223,8 +228,8 @@ npm run dev
 
 ## Current limitations
 
-- Dispute cases and generated PDFs live in memory and are cleared when the backend restarts. There is no
-  database yet; the schemas are documented in [docs/ARCHITECTURE.md § 7](docs/ARCHITECTURE.md#7-data-model-and-schemas).
+- Dispute cases and generated PDFs live in memory and are cleared when the backend restarts; only evidence
+  embeddings persist (in Chroma). There is no case database yet; the schemas are documented in [docs/ARCHITECTURE.md § 7](docs/ARCHITECTURE.md#7-data-model-and-schemas).
 - Not yet run against the real gemma2 and EmbeddingGemma 2 models or inside Docker. Development tests used a
   stand-in Ollama server, so real scores will differ.
 - Image embedding uses `/api/embed` with `{"text": "", "image": <base64 JPEG>}` items. Ollama's model page doesn't
@@ -232,3 +237,5 @@ npm run dev
 - Scoring weights, image score range and thresholds are hand-tuned and should be re-checked on real output.
 - No OCR: a scanned PDF has no text layer, so upload it as a JPEG to have it matched as an image.
 - No authentication; this is a local demo.
+- Stored vectors are tagged with the embedding model name and re-embedded if `OLLAMA_EMBED_MODEL` changes. To
+  wipe them, run `docker compose down -v` (removes the `chroma-data` volume).

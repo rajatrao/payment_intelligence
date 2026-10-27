@@ -26,10 +26,11 @@ export default function PipelineStages({ stages }) {
               {s.state === "running" ? <Spinner className="h-3 w-3" /> : <span>{i + 1}</span>}
               {label}
             </div>
-            <div className="mt-0.5 truncate font-mono text-[10px] opacity-80" title={s.model || s.method || s.error}>
+            <div className="mt-0.5 truncate font-mono text-[10px] opacity-80" title={[s.model || s.method || s.error, s.vectors].filter(Boolean).join(" · ")}>
               {s.error || s.model || s.method || s.state}
               {fallback && " ⚠"}
             </div>
+            {s.vectors && <div className="truncate text-[10px] opacity-70">{s.vectors}</div>}
           </li>
         );
       })}

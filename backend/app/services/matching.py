@@ -9,8 +9,8 @@ import math
 import re
 from datetime import date, timedelta
 
-from app.services.extraction import chunk_text
-from app.services.ollama_client import embed_image, embed_texts
+from app.services.ollama_client import embed_texts
+from app.services.vector_store import IMAGE_LABEL
 
 SEMANTIC_WEIGHT = 0.6
 FIELD_WEIGHT = 0.4
@@ -75,9 +75,9 @@ def field_checks(txn: dict, text: str) -> list[dict]:
     ]
 
 
-# EmbeddingGemma retrieval prompts: facets act as queries, evidence chunks as documents.
+# EmbeddingGemma retrieval prompt for queries: the transaction facets. Evidence is embedded with the document
+# prompt and stored in Chroma by vector_store.py.
 QUERY_PREFIX = "task: search result | query: "
-DOC_PREFIX = "title: none | text: "
 
 # Map raw cosine into 0..1. Text-to-text cosines for related passages rarely drop below ~0.2; text-to-image
 # cosines run lower. Both ranges are starting points to re-tune against embeddinggemma-2 output.
@@ -93,23 +93,22 @@ def _semantic(best_per_facet: list[float], floor: float, span: float) -> float:
     return sum(max(0.0, min(1.0, (s - floor) / span)) for s in best_per_facet) / len(best_per_facet)
 
 
-async def match_evidence(txn: dict, kind: str, document_text: str, data: bytes) -> dict:
-    """Score evidence against a transaction. Text-layer PDFs are matched passage by passage; JPEGs are
-    embedded directly as images by the same multimodal model."""
-    if kind == "jpeg":
-        return await _match_image(txn, data)
-    return await _match_text(txn, document_text)
-
-
-async def _match_text(txn: dict, document_text: str) -> dict:
-    has_text = bool(document_text.strip())
-    chunks = chunk_text(document_text) or ["(no text layer in evidence; nothing to match)"]
+async def match_evidence(txn: dict, doc: dict, document_text: str) -> dict:
+    """Score stored evidence (see vector_store.index_document) against a transaction. Only the transaction
+    facets are embedded here; the evidence vectors come from Chroma."""
     facets = transaction_facets(txn)
-    facet_names = list(facets)
+    facet_vecs, model_used = await embed_texts([QUERY_PREFIX + f for f in facets.values()])
+    if doc["kind"] == "jpeg":
+        result = _match_image(txn, facets, facet_vecs, doc["vectors"][0], model_used)
+    else:
+        result = _match_text(txn, facets, facet_vecs, doc["chunks"], doc["vectors"], document_text, model_used)
+    return {**result, "doc_id": doc["doc_id"], "vectors_cached": doc["cached"]}
 
-    vectors, model_used = await embed_texts([QUERY_PREFIX + f for f in facets.values()] +
-                                            [DOC_PREFIX + c for c in chunks])
-    facet_vecs, chunk_vecs = vectors[: len(facets)], vectors[len(facets):]
+
+def _match_text(txn: dict, facets: dict, facet_vecs: list, chunks: list[str], chunk_vecs: list,
+                document_text: str, model_used: str) -> dict:
+    has_text = bool(document_text.strip())
+    facet_names = list(facets)
 
     matrix = [[round(cosine(f, c), 4) for c in chunk_vecs] for f in facet_vecs]
     semantic = _semantic([max(row) for row in matrix], *TEXT_RANGE)
@@ -148,19 +147,14 @@ async def _match_text(txn: dict, document_text: str) -> dict:
     }
 
 
-async def _match_image(txn: dict, data: bytes) -> dict:
-    facets = transaction_facets(txn)
+def _match_image(txn: dict, facets: dict, facet_vecs: list, image_vec: list, model_used: str) -> dict:
     facet_names = list(facets)
-
-    facet_vecs, model_used = await embed_texts([QUERY_PREFIX + f for f in facets.values()])
-    image_vec = await embed_image(data)
 
     matrix = [[round(cosine(f, image_vec), 4)] for f in facet_vecs]
     semantic = _semantic([row[0] for row in matrix], *IMAGE_RANGE)
     # Exact field checks need text, so an image is scored on the embedding alone.
     checks = [{**c, "matched": False, "applicable": False} for c in field_checks(txn, "")]
     strongest = max(row[0] for row in matrix)
-    image_label = "(image evidence: compared visually by the embedding model; see Exhibit A)"
 
     return {
         "mode": "image",
@@ -175,9 +169,9 @@ async def _match_image(txn: dict, data: bytes) -> dict:
         "chunks": ["image"],
         "matrix": matrix,
         "field_checks": checks,
-        "top_evidence": [{"chunk_index": 0, "similarity": round(strongest, 4), "text": image_label}],
+        "top_evidence": [{"chunk_index": 0, "similarity": round(strongest, 4), "text": IMAGE_LABEL}],
         "note": "Image evidence is embedded directly by the multimodal model and compared with each transaction "
         "detail. Exact amount/date/merchant checks need text, so they are not applied.",
         "purpose_evidence": {"chunk_index": 0, "similarity": matrix[facet_names.index("purpose")][0],
-                             "text": image_label},
+                             "text": IMAGE_LABEL},
     }

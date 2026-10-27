@@ -22,6 +22,7 @@ from app.services.matching import match_evidence
 from app.services.ollama_client import OllamaUnavailable, ollama_status
 from app.services.pdf_builder import build_chargeback_package
 from app.services.samples import DEFAULT_SAMPLE_ID, get_sample, sample_bytes, sample_metadata
+from app.services import vector_store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("api")
@@ -53,7 +54,7 @@ def _pdf_response(data: bytes, filename: str, download: bool) -> Response:
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "ollama": await ollama_status(),
+    return {"status": "ok", "ollama": await ollama_status(), "vector_store": vector_store.stats(),
             "config": {"text_model": settings.text_model, "embed_model": settings.embed_model,
                        "nimble_path": settings.nimble_path, "offline_fallback": settings.allow_offline_fallback}}
 
@@ -107,7 +108,8 @@ async def score_samples(transaction_id: str):
     async def score(sample: dict) -> dict:
         data = sample_bytes(sample["id"])
         text, _ = await asyncio.to_thread(extract_text, sample["kind"], data)
-        m = await match_evidence(txn, sample["kind"], text, data)
+        doc = await vector_store.index_document(data, sample["filename"], sample["kind"], text, "sample")
+        m = await match_evidence(txn, doc, text)
         return {"sample_id": sample["id"], "score": m["score"], "semantic_score": m["semantic_score"],
                 "field_score": m["field_score"], "verdict": m["verdict"]}
 
@@ -148,7 +150,7 @@ def _stage(case: dict, name: str, state: str, **detail):
     case["stages"][name] = {"state": state, "at": datetime.now(timezone.utc).isoformat(), **detail}
 
 
-async def run_pipeline(case_id: str, txn: dict, filename: str, kind: str, data: bytes):
+async def run_pipeline(case_id: str, txn: dict, filename: str, kind: str, data: bytes, source: str):
     case = DISPUTES[case_id]
     try:
         _stage(case, "extract", "running")
@@ -157,8 +159,10 @@ async def run_pipeline(case_id: str, txn: dict, filename: str, kind: str, data: 
         case["evidence"] = {"filename": filename, "kind": kind, "method": method, "text_preview": text[:1500]}
 
         _stage(case, "embed_match", "running")
-        match = await match_evidence(txn, kind, text, data)
-        _stage(case, "embed_match", "done", model=match["embedding_model"])
+        doc = await vector_store.index_document(data, filename, kind, text, source)
+        match = await match_evidence(txn, doc, text)
+        _stage(case, "embed_match", "done", model=match["embedding_model"], doc_id=doc["doc_id"],
+               vectors="reused from Chroma" if doc["cached"] else "embedded and stored in Chroma")
         case["match"] = match
 
         _stage(case, "generate_letter", "running")
@@ -192,7 +196,7 @@ async def create_dispute(transaction_id: str = Form(...), file: UploadFile | Non
 
     if file is not None and file.filename:
         data = await file.read()
-        filename = file.filename
+        filename, source = file.filename, "upload"
         if len(data) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, "Evidence file exceeds 15 MB")
         try:
@@ -202,6 +206,7 @@ async def create_dispute(transaction_id: str = Form(...), file: UploadFile | Non
     elif sample_id or use_sample:
         sample = _sample_or_404(sample_id or DEFAULT_SAMPLE_ID)
         data, filename, kind = sample_bytes(sample["id"]), sample["filename"], sample["kind"]
+        source = "sample"
     else:
         raise HTTPException(400, "Upload a PDF/JPEG evidence file, or pass sample_id")
 
@@ -209,7 +214,7 @@ async def create_dispute(transaction_id: str = Form(...), file: UploadFile | Non
     DISPUTES[case_id] = {"case_id": case_id, "transaction_id": transaction_id, "status": "processing",
                          "created_at": datetime.now(timezone.utc).isoformat(),
                          "stages": {s: {"state": "pending"} for s in PIPELINE_STAGES}}
-    task = asyncio.create_task(run_pipeline(case_id, txn, filename, kind, data))
+    task = asyncio.create_task(run_pipeline(case_id, txn, filename, kind, data, source))
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
     return DISPUTES[case_id]

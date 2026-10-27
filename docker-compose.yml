@@ -13,6 +13,10 @@ services:
       OLLAMA_NIMBLE_PATH: ${OLLAMA_NIMBLE_PATH:-/v1/systemone}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
       ALLOW_OFFLINE_FALLBACK: ${ALLOW_OFFLINE_FALLBACK:-true}
+      # Chroma vector store for evidence embeddings, kept on a named volume across restarts.
+      CHROMA_DIR: /data/chroma
+    volumes:
+      - chroma-data:/data/chroma
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -30,3 +34,6 @@ services:
         condition: service_healthy
     ports:
       - "3000:80"
+
+volumes:
+  chroma-data:
