@@ -227,8 +227,13 @@ def _match_image(txn: dict, facets: dict, facet_vecs: list, image_vec: list, med
     matrix = [[round(cosine(f, image_vec), 4)] for f in facet_vecs]
     # Lift of each facet over the queue median: only what sets this transaction apart from the others counts.
     # A photo rarely shows every detail legibly, so the score uses the IMAGE_TOP_FACETS facets that lift most.
-    lifts = sorted((row[0] - m for row, m in zip(matrix, medians)), reverse=True)
+    raw_lifts = [row[0] - m for row, m in zip(matrix, medians)]
+    lifts = sorted(raw_lifts, reverse=True)
     semantic = _semantic(lifts[:IMAGE_TOP_FACETS], 0.0, IMAGE_MARGIN)
+    used = set(sorted(range(len(raw_lifts)), key=lambda i: raw_lifts[i], reverse=True)[:IMAGE_TOP_FACETS])
+    image_lifts = [{"facet": name, "cosine": matrix[i][0], "queue_median": round(medians[i], 4),
+                    "lift": round(raw_lifts[i], 4), "scaled": round(max(0.0, min(1.0, raw_lifts[i] / IMAGE_MARGIN)), 4),
+                    "used": i in used} for i, name in enumerate(facet_names)]
     strongest = max(row[0] for row in matrix)
     if fields:
         checks = extracted_checks(txn, fields)
@@ -256,6 +261,8 @@ def _match_image(txn: dict, facets: dict, facet_vecs: list, image_vec: list, med
         "field_checks": checks,
         "top_evidence": [{"chunk_index": 0, "similarity": round(strongest, 4), "text": IMAGE_LABEL}],
         "image_baseline": [round(m, 4) for m in medians],
+        "image_lifts": image_lifts,
+        "image_margin": IMAGE_MARGIN,
         "note": "Photo evidence: the semantic score is how much more the image resembles this transaction than the "
         "rest of the dispute queue (EmbeddingGemma 2), and the field checks use the values "
         f"{fields['model']} read from the photo." if fields else

@@ -73,30 +73,58 @@ export default function MatchPanel({ match }) {
         ))}
       </div>
 
-      <div>
-        <div className="label mb-1.5">Cosine similarity matrix · facets × document chunks</div>
-        <div className="overflow-x-auto">
-          <table className="border-separate border-spacing-0.5 text-[10px]">
-            <tbody>
-              {match.matrix.map((row, i) => (
-                <tr key={match.facets[i]}>
-                  <th className="pr-2 text-left font-medium capitalize text-slate-500">{match.facets[i]}</th>
-                  {row.map((v, j) => (
-                    <td
-                      key={j}
-                      title={`${match.facets[i]} × chunk ${j + 1}: ${v.toFixed(3)}\n${match.chunks[j]}`}
-                      className="h-5 w-7 rounded-sm text-center font-mono text-white"
-                      style={{ background: cellColor(v, max) }}
-                    >
-                      {v >= max * 0.75 ? v.toFixed(2).slice(1) : ""}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {match.mode === "image" && match.image_lifts ? (
+        <div>
+          <div className="label mb-1">Stands out from the dispute queue by</div>
+          <p className="mb-2 text-[10px] text-slate-500">
+            Photo-to-text similarity is high for any text, so each detail is compared with the same detail across the
+            whole queue. A full bar is +{match.image_margin.toFixed(2)} above the queue median; the top 3 count.
+          </p>
+          <div className="space-y-1">
+            {match.image_lifts.map((l) => (
+              <div
+                key={l.facet}
+                className={`flex items-center gap-2 text-[11px] ${l.used ? "text-slate-700" : "text-slate-400"}`}
+                title={`similarity ${l.cosine.toFixed(3)} vs queue median ${l.queue_median.toFixed(3)}`}
+              >
+                <span className="w-20 shrink-0 capitalize">{l.facet}</span>
+                <div className="h-1.5 flex-1 rounded bg-slate-100">
+                  <div className={`h-1.5 rounded ${l.used ? tone.bar : "bg-slate-300"}`} style={{ width: `${l.scaled * 100}%` }} />
+                </div>
+                <span className="w-14 text-right font-mono tabular-nums">
+                  {l.lift >= 0 ? "+" : ""}
+                  {l.lift.toFixed(3)}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div>
+          <div className="label mb-1.5">Cosine similarity matrix · facets × document chunks</div>
+          <div className="overflow-x-auto">
+            <table className="border-separate border-spacing-0.5 text-[10px]">
+              <tbody>
+                {match.matrix.map((row, i) => (
+                  <tr key={match.facets[i]}>
+                    <th className="pr-2 text-left font-medium capitalize text-slate-500">{match.facets[i]}</th>
+                    {row.map((v, j) => (
+                      <td
+                        key={j}
+                        title={`${match.facets[i]} × chunk ${j + 1}: ${v.toFixed(3)}\n${match.chunks[j]}`}
+                        className="h-5 w-7 rounded-sm text-center font-mono text-white"
+                        style={{ background: cellColor(v, max) }}
+                      >
+                        {v >= max * 0.75 ? v.toFixed(2).slice(1) : ""}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
