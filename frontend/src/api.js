@@ -1,0 +1,33 @@
+const BASE = import.meta.env.VITE_API_BASE || "";
+
+async function json(res) {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export const api = {
+  health: () => fetch(`${BASE}/api/health`).then(json),
+  transactions: () => fetch(`${BASE}/api/disputes/transactions`).then(json),
+  samples: () => fetch(`${BASE}/api/disputes/samples`).then(json),
+  sampleScores: (transactionId) =>
+    fetch(`${BASE}/api/disputes/samples/scores?transaction_id=${encodeURIComponent(transactionId)}`).then(json),
+  sampleUrl: (id, download = false) => `${BASE}/api/disputes/samples/${id}${download ? "?download=true" : ""}`,
+  async sampleFile(sample) {
+    const res = await fetch(`${BASE}/api/disputes/samples/${sample.id}`);
+    if (!res.ok) throw new Error(`Could not load sample ${sample.title}`);
+    const blob = await res.blob();
+    const type = sample.kind === "jpeg" ? "image/jpeg" : "application/pdf";
+    return new File([blob], sample.filename, { type });
+  },
+  createDispute(transactionId, file) {
+    const form = new FormData();
+    form.append("transaction_id", transactionId);
+    form.append("file", file);
+    return fetch(`${BASE}/api/disputes/cases`, { method: "POST", body: form }).then(json);
+  },
+  dispute: (caseId) => fetch(`${BASE}/api/disputes/cases/${caseId}`).then(json),
+  packageUrl: (path, download = false) => `${BASE}${path}${download ? "?download=true" : ""}`,
+};

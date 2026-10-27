@@ -1,0 +1,32 @@
+name: payment-intelligence
+
+services:
+  backend:
+    build: ./backend
+    environment:
+      # Ollama runs on the host. host.docker.internal resolves natively on Docker Desktop (macOS/Windows);
+      # the extra_hosts entry below makes it work on Linux too.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_TEXT_MODEL: ${OLLAMA_TEXT_MODEL:-gemma2:2b}
+      OLLAMA_TEXT_MODEL_FALLBACKS: ${OLLAMA_TEXT_MODEL_FALLBACKS:-gemma2:9b,gemma2}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-embeddinggemma-2}
+      OLLAMA_NIMBLE_PATH: ${OLLAMA_NIMBLE_PATH:-/v1/systemone}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
+      ALLOW_OFFLINE_FALLBACK: ${ALLOW_OFFLINE_FALLBACK:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:80"
