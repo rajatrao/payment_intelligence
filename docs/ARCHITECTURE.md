@@ -696,8 +696,7 @@ All settings are environment variables, read in `config.py` and passed through `
 | Same file uploaded again | Vectors reused, only facets embedded | Match results say "reused from Chroma" |
 | Card Optimizer: Ollama older than 0.35 (no `/v1/systemone`) or `nimble` not pulled | gemma3 makes the choice through `/api/chat` with a JSON-schema `format` | "gemma3:4b via /api/chat" and a note saying why |
 | Card Optimizer: Ollama unavailable | The rule engine's answer is shown | "rules (models unavailable)" and the errors under the recommendation |
-| Card Optimizer: model chooses `NO_CHANGE` although a working card fixes a failed payment or saves 10 USD or more | Treated as a misread: the rule engine's answer is shown | Amber warning naming the card and saving; "Rule check disagrees" |
-| Card Optimizer: model picks an ineligible card | The rule engine's card is used; a warning is added | Amber warning on the recommendation |
+| Card Optimizer: model picks a card the rule engine says can't clear the friction | The model's answer is still shown; no payment is counted as recovered | Amber warning naming the issue |
 | Card Optimizer: model disagrees with the rule engine | The model's answer is shown; the rule's answer is shown next to it | "Rule check: disagrees" note |
 
 ## 14. Card Optimizer and module gating
@@ -731,13 +730,14 @@ flowchart LR
    `SCA_BYPASS_CORRIDOR`; regional block → `INTER-REGIONAL_ROUTING`; saving under `MIN_SAVING_USD` (10) →
    `NO_CHANGE`; best card removes the FX fee → `FX_INTERBANK_MATCH`; otherwise `INTER-REGIONAL_ROUTING`. No
    eligible card → `NO_CHANGE`.
-5. **Decision** (`card_optimizer.recommend`). The payment, corridor and friction go to Ollama's decision API as
-   `state`, with two `choice` questions: `reason_code` (the three codes plus `NO_CHANGE`, each with a description)
-   and `card` (one option per portfolio card, described with its issuer, region, fee and eligibility). See the
-   request below.
-6. **Check and price.** Questions are scored independently, so the two answers are checked together here: an
-   ineligible card is replaced by the rule's card with a warning, and `agrees_with_rules` compares code and card.
-   The action and rationale are written from the engine's facts, since a decision model writes no text. `fees_saved_usd` and `recovered_usd` come from `corridor.savings`, never the model:
+5. **Decision** (`card_optimizer.recommend`). The raw payment (decline code and text, status, corridor) goes to
+   Ollama's decision API as `state`, with two `choice` questions: `reason_code` (the three codes plus `NO_CHANGE`,
+   each describing a kind of problem and fix) and `card` (one option per portfolio card, described with facts
+   only: issuer and region, currencies held, SCA exemption, fees on this payment, and whether it already failed).
+   Nothing in the request says which answer is right; the model makes the judgement. See the request below.
+6. **Compare and price.** The model's answer is shown as given. The rule engine is a second opinion:
+   `agrees_with_rules` compares code and card, and a card the rule engine thinks can't clear the friction is
+   flagged. The action and rationale are written from the engine's facts, since a decision model writes no text. `fees_saved_usd` and `recovered_usd` come from `corridor.savings`, never the model:
    for a failed payment, recovered is its USD amount when the card is eligible.
 
 Rule answers on the mock data:
@@ -765,26 +765,22 @@ take 2 to 26 options, and the request must fit nimble's 8,192-token context. `ol
   "state": {
     "payment": {"merchant": "OVH SAS", "amount": 2310.4, "currency": "EUR", "status": "DECLINED",
                 "decline_code": "1A", "decline_text": "SCA_REQUIRED / soft decline - …"},
-    "corridor": "US (NA) -> FR (EU)",
-    "facts": {"sca_challenge": true, "regional_block": false, "payment_failed": true,
-              "current_card": "Visa Corporate ****4471", "current_card_can_work": false, "current_fee_usd": 99.81,
-              "best_working_card": "Mastercard Lodged Virtual (IE) ****3310", "best_card_fee_usd": 0.0,
-              "saving_usd": 99.81, "saving_meets_threshold": true, "best_card_removes_fx_fee": true,
-              "best_card_in_merchant_region": true}
+    "corridor": "card issued in US (NA), merchant in FR (EU)",
+    "current_card": "Visa Corporate ****4471",
+    "current_fee_usd": 99.81
   },
   "questions": {
-    "reason_code": {"type": "choice", "instructions": "Which routing action fixes this payment's friction at the lowest cost?",
+    "reason_code": {"type": "choice", "instructions": "What is wrong with this payment, and which kind of fix does it need?",
                     "criteria": {"SCA_BYPASS_CORRIDOR": "…", "FX_INTERBANK_MATCH": "…",
                                  "INTER-REGIONAL_ROUTING": "…", "NO_CHANGE": "…"}},
-    "card": {"type": "choice", "instructions": "Which company card should this payment be routed through? …",
-             "criteria": {"card_eu_lodged": "Mastercard Lodged Virtual (IE) ****3310 (best working card), issued in IE (EU), fee 0.00 USD, can work", "…": "…"}}
+    "card": {"type": "choice", "instructions": "Which company card should this payment be retried or paid on? …",
+             "criteria": {"card_eu_lodged": "Mastercard Lodged Virtual (IE) ****3310: issued in IE (EU, same region as the merchant), holds EUR, corporate SCA exemption: yes, fees on this payment 0.00% FX + 0.00% cross-border = 0.00 USD, 99.81 USD less than the current card", "…": "…"}}
   }
 }
 ```
 
-A decision model classifies; it doesn't do arithmetic. So `facts` carries what corridor.py already worked out
-(which card works, what it saves, whether it removes the FX fee), and each reason-code option names the facts it
-applies to. It reads `answers.reason_code.choice`, `answers.card.choice`, their `probabilities` and `confidence`. The
+Fees are given in USD with the difference from the current card, so the model compares numbers rather than
+computing them. It reads `answers.reason_code.choice`, `answers.card.choice`, their `probabilities` and `confidence`. The
 reason-code probabilities are shown as bars on the recommendation.
 
 Fallbacks: if Ollama returns 404 (Ollama older than 0.35, or `nimble` not pulled), `structured_chat` asks gemma3

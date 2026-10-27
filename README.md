@@ -90,13 +90,14 @@ heavy fees) and recommends which card in the company's portfolio each one should
    region to merchant country and region), the friction it hit (SCA challenge from decline codes 1A/65 or 3DS text,
    regional block from codes 05/57/62, FX markup, cross-border fee) and, for every card, the fee it would cost and
    whether it could actually clear the friction.
-3. **Decision model.** The payment, corridor, friction and card table go to Ollama's decision API
+3. **Decision model.** The raw payment (decline code and text, corridor) and a plain description of every card go to Ollama's decision API
    (`POST /v1/systemone`, Ollama 0.35+) running the `nimble` decision model. It answers two choice questions, which
    reason code and which card, with a probability for every option, so it can only ever return one of the codes
-   below and a card from the portfolio. The UI shows the probabilities. A decision model writes no text, so the
+   below and a card from the portfolio. Nothing tells it the right answer: the judgement is the model's. The UI
+   shows the probabilities. A decision model writes no text, so the
    action and rationale are filled in from the engine's facts.
-4. **Check and price.** The answer is compared with a rule engine. If the model picks a card that can't clear the
-   friction, the rule's card is used and a warning is shown. Fees saved and payment volume recovered are always
+4. **Compare and price.** The model's answer is shown as given, next to a rule engine's answer as a second
+   opinion. Disagreements are highlighted, never overwritten. Fees saved and payment volume recovered are always
    computed by the engine, never by the model.
 5. **Fallbacks.** If the decision API or `nimble` is missing, gemma3 makes the same choice through Ollama's
    structured outputs (`/api/chat` with a JSON schema). If Ollama is unavailable, the rule engine's answer is
