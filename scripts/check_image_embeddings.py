@@ -4,8 +4,7 @@ Run with Ollama and the backend up (docker compose up, or uvicorn on :8000):
 
     python3 scripts/check_image_embeddings.py
 
-1. Asks Ollama directly whether it reads images: two different photos should give different vectors, and
-   neither should equal the empty-text vector.
+1. Asks Ollama directly whether it reads images: two different photos should give clearly different vectors.
 2. Matches each sample photo against the dispute queue through the backend and prints the raw cosine per
    facet, the queue median, and the resulting score. The Northwind photo should win txn_51be08d4; the taxi
    photo should match nothing. If not, tune IMAGE_MARGIN in backend/app/services/matching.py.
@@ -49,10 +48,9 @@ def main():
         print("could not read /api/show:", exc)
 
     images = {p: base64.b64encode(call(f"{BACKEND}/api/disputes/samples/{p}")).decode() for p in PHOTOS}
-    inputs = [{"text": "", "image": images[p]} for p in PHOTOS] + [""]
-    a, b, blank = call(f"{OLLAMA}/api/embed", {"model": MODEL, "input": inputs})["embeddings"]
-    print(f"\ncos(photo A, photo B)    = {cos(a, b):.4f}   (well below 1.0 = images are read)")
-    print(f"cos(photo A, empty text) = {cos(a, blank):.4f}   (near 1.0 = image ignored)")
+    inputs = [{"text": "", "image": images[p]} for p in PHOTOS]
+    a, b = call(f"{OLLAMA}/api/embed", {"model": MODEL, "input": inputs})["embeddings"]
+    print(f"\ncos(photo A, photo B) = {cos(a, b):.4f}   (below ~0.99 = images are read; ~1.0 = image ignored)")
 
     queue = json.loads(call(f"{BACKEND}/api/disputes/transactions"))["transactions"]
     txns = {t["id"]: t["merchant_descriptor"] for t in queue}

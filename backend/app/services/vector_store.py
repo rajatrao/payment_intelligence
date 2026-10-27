@@ -48,14 +48,24 @@ def _cos(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+def _blank_jpeg() -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (128, 128, 128)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
 async def _check_image_read(vector: list[float]) -> None:
-    """Ollama falls back to embedding the text alone when it can't read an image. Our image items carry empty
-    text, so an unread image comes back as the empty-text vector: catch that instead of scoring it."""
+    """If Ollama can't read an image it embeds the item's (empty) text instead, so every image comes back as the
+    same vector. Compare with a plain grey image: a real photo of a receipt can't be near-identical to it."""
     if settings.embed_model not in _BLANK:
-        _BLANK[settings.embed_model] = (await embed_texts([""]))[0][0]
-    if _cos(vector, _BLANK[settings.embed_model]) > 0.98:
+        _BLANK[settings.embed_model] = await embed_image(_blank_jpeg())
+    if _cos(vector, _BLANK[settings.embed_model]) > 0.995:
         raise OllamaUnavailable(
-            f"Ollama did not read the image: '{settings.embed_model}' returned the same vector as empty text. "
+            f"Ollama did not read the image: '{settings.embed_model}' returned the same vector as for a blank image. "
             f"Update Ollama, check that `ollama show {settings.embed_model}` lists the vision capability, and use "
             f"an image-capable tag (latest, :740m or :440m).")
 

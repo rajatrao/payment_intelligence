@@ -555,9 +555,10 @@ use the values gemma3 read from the photo (shown as `read:` in the match panel),
 amount gate as PDFs. If gemma3 is unavailable, the image is scored on the relative semantic score alone (weight 1.0).
 Facet vectors are cached per process, so scoring against the queue costs no extra Ollama calls after the first.
 
-Ollama embeds an image it can't read from its text alone. Image items carry empty text, so an unread image comes
-back equal to the empty-text vector; `vector_store.py` detects that (cosine > 0.98) and fails with a clear
-message instead of scoring it. `scripts/check_image_embeddings.py` prints the raw cosines, queue medians and
+Ollama embeds an image it can't read from its text alone. Image items carry empty text, so every unread image
+would come back as the same vector; `vector_store.py` compares each photo with a plain grey image (cosine > 0.995
+means unread) and fails with a clear message instead of scoring it. Embedding empty text directly is rejected by
+Ollama ("empty content"), so it can't serve as the baseline. `scripts/check_image_embeddings.py` prints the raw cosines, queue medians and
 scores for the sample photos, to confirm images are read and to tune `IMAGE_MARGIN` on real output.
 The image request shape comes from community usage; Ollama's model page doesn't document it, so confirm it on a
 real install. A text-only tag (`:270m`, `:570m`) will make image cases fail with Ollama's error.
