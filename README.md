@@ -141,6 +141,7 @@ docker compose up --build
 | --- | --- |
 | Badge red: "Ollama unreachable" | Make sure Ollama is running (`curl http://localhost:11434/api/tags`). If that works but the container still can't reach it, make Ollama listen on all interfaces and restart it. macOS: `launchctl setenv OLLAMA_HOST "0.0.0.0"`, then quit and reopen the Ollama app. Linux: `sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0"` under `[Service]`, then `sudo systemctl restart ollama`. |
 | Linux: `host.docker.internal` doesn't resolve | Already handled by `extra_hosts: host-gateway` in `docker-compose.yml`; make sure you're on Docker 20.10+. |
+| `ollama pull` says "requires a newer version of Ollama" | Update Ollama (download the latest from ollama.com, or `brew upgrade ollama`), restart it, then pull again |
 | Case fails: "Embedding model 'embeddinggemma-2' is not installed" | `ollama pull embeddinggemma-2` |
 | JPEG case fails with an Ollama error | Check you're using an image-capable tag (default, `:740m` or `:440m`), and update Ollama. |
 | Package says "Template letter" | gemma2 isn't installed: `ollama pull gemma2:2b`. Set `ALLOW_OFFLINE_FALLBACK=false` to fail instead of using the template. |
