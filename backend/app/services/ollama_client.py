@@ -131,6 +131,40 @@ async def generate_json(prompt: str, schema: dict, image_b64: str | None = None)
         raise OllamaUnavailable(f"'{settings.llm_model}' did not return valid JSON") from exc
 
 
+async def structured_chat(system: str, prompt: str, schema: dict) -> tuple[dict, str, str]:
+    """Structured-JSON chat for the Card Optimizer and Liquidity Guard. Returns (json, model, route).
+
+    Tries the configured structured-primitive endpoint (OLLAMA_NIMBLE_PATH, default /v1/systemone) first. Stock
+    Ollama doesn't serve that path, so on 404/405 it falls back to Ollama's native structured outputs
+    (POST /api/chat with a JSON-schema `format`). The route actually used is returned so the UI can show it."""
+    payload = {"model": settings.llm_model, "stream": False, "format": schema, "options": {"temperature": 0},
+               "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]}
+    routes = [p for p in (settings.nimble_path, "/api/chat") if p]
+    last_error = ""
+    try:
+        async with _client() as client:
+            for route in routes:
+                r = await client.post(route, json=payload)
+                if r.status_code in (404, 405) and route != "/api/chat":
+                    last_error = f"{route} returned {r.status_code}"
+                    continue
+                if r.status_code == 404:
+                    raise OllamaUnavailable(f"Language model '{settings.llm_model}' is not installed in Ollama. "
+                                            f"Run: ollama pull {settings.llm_model}")
+                if r.status_code != 200:
+                    raise OllamaUnavailable(f"Ollama {route} returned {r.status_code}: {r.text[:300].strip()}")
+                body = r.json()
+                content = ((body.get("message") or {}).get("content") or body.get("response")
+                           or ((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+                try:
+                    return json.loads(content), settings.llm_model, route
+                except ValueError as exc:
+                    raise OllamaUnavailable(f"'{settings.llm_model}' did not return valid JSON") from exc
+    except (httpx.HTTPError, OSError) as exc:
+        raise OllamaUnavailable(f"Ollama is unreachable at {settings.ollama_base_url}: {exc}") from exc
+    raise OllamaUnavailable(last_error or "no structured-output route available")
+
+
 def image_b64(data: bytes) -> str:
     return _jpeg_b64(data)
 
