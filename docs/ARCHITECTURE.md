@@ -758,6 +758,8 @@ Rule answers on the mock data:
 
 ### Decision API
 
+Full request and response examples, design history and tests: [CARD_OPTIMIZER.md](CARD_OPTIMIZER.md).
+
 Ollama 0.35 added `POST /v1/systemone` for decision models (`ollama pull nimble`, a 9B model). A decision model
 only picks from the options it is given and returns a probability for each; it writes no text. Choice questions
 take 2 to 26 options, and the request must fit nimble's 8,192-token context. `ollama_client.decide` sends:

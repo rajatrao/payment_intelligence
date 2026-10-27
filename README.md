@@ -13,7 +13,8 @@ The product has three modules. Each one is unlocked only after the one before it
 | Liquidity Guard | Flags variable usage-based liabilities before they auto-debit | Locked (lock wall in UI, `423` from API) |
 
 For the full blueprint (diagrams, data schemas, request flow, algorithms, API and configuration), see
-**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. The Card Optimizer and its decision-API requests are detailed in
+**[docs/CARD_OPTIMIZER.md](docs/CARD_OPTIMIZER.md)**.
 
 ## How the Auto-Dispute Concierge works
 
@@ -286,6 +287,15 @@ OLLAMA_BASE_URL=http://localhost:11434 uvicorn app.main:app --reload
 cd frontend
 npm install
 npm run dev
+```
+
+## Tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest -q          # no Ollama needed: model calls are faked
+python3 ../scripts/check_card_decisions.py   # with the app running: Card Optimizer on the real models
 ```
 
 ## Current limitations
