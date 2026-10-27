@@ -3,6 +3,8 @@
 - Embeddings: POST {base}/api/embed {"model": ..., "input": [...]} (text strings, or {"text", "image"} objects)
 - Text:       POST {base}/api/generate   {"model": ..., "system": ..., "prompt": ..., "stream": false}
 - Fields:     POST {base}/api/generate   {"model": ..., "format": <JSON schema>, "images": [...]}
+- Decisions:  POST {base}/v1/systemone  {"model": "nimble", "state": {...}, "questions": {...}}  (Ollama 0.35+)
+- JSON chat:  POST {base}/api/chat       {"model": ..., "format": <JSON schema>, "messages": [...]}
 
 Embeddings use exactly one model (embeddinggemma-2, multimodal) and fail loudly if it is unavailable.
 One language model (gemma3:4b, vision-capable) reads evidence fields and writes letters; the template-letter
@@ -53,6 +55,7 @@ async def ollama_status() -> dict:
         "base_url": settings.ollama_base_url,
         "llm_model": resolve([settings.llm_model]),
         "embed_model": resolve([settings.embed_model]),
+        "decision_model": resolve([settings.decision_model]),
         "installed": sorted(installed),
     }
 
@@ -131,38 +134,48 @@ async def generate_json(prompt: str, schema: dict, image_b64: str | None = None)
         raise OllamaUnavailable(f"'{settings.llm_model}' did not return valid JSON") from exc
 
 
-async def structured_chat(system: str, prompt: str, schema: dict) -> tuple[dict, str, str]:
-    """Structured-JSON chat for the Card Optimizer and Liquidity Guard. Returns (json, model, route).
+async def decide(state, questions: dict) -> dict:
+    """Ollama's decision API (Ollama 0.35+). Returns the `answers` dict, one entry per named question.
 
-    Tries the configured structured-primitive endpoint (OLLAMA_NIMBLE_PATH, default /v1/systemone) first. Stock
-    Ollama doesn't serve that path, so on 404/405 it falls back to Ollama's native structured outputs
-    (POST /api/chat with a JSON-schema `format`). The route actually used is returned so the UI can show it."""
-    payload = {"model": settings.llm_model, "stream": False, "format": schema, "options": {"temperature": 0},
-               "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]}
-    routes = [p for p in (settings.nimble_path, "/api/chat") if p]
-    last_error = ""
+    A decision model only picks from the options it is given and returns a probability for each; it writes no text.
+    Choice questions take 2 to 26 options and the whole request must fit the model's 8,192-token context."""
+    payload = {"model": settings.decision_model, "state": state, "questions": questions}
     try:
         async with _client() as client:
-            for route in routes:
-                r = await client.post(route, json=payload)
-                if r.status_code in (404, 405) and route != "/api/chat":
-                    last_error = f"{route} returned {r.status_code}"
-                    continue
-                if r.status_code == 404:
-                    raise OllamaUnavailable(f"Language model '{settings.llm_model}' is not installed in Ollama. "
-                                            f"Run: ollama pull {settings.llm_model}")
-                if r.status_code != 200:
-                    raise OllamaUnavailable(f"Ollama {route} returned {r.status_code}: {r.text[:300].strip()}")
-                body = r.json()
-                content = ((body.get("message") or {}).get("content") or body.get("response")
-                           or ((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
-                try:
-                    return json.loads(content), settings.llm_model, route
-                except ValueError as exc:
-                    raise OllamaUnavailable(f"'{settings.llm_model}' did not return valid JSON") from exc
+            r = await client.post(settings.nimble_path, json=payload)
     except (httpx.HTTPError, OSError) as exc:
         raise OllamaUnavailable(f"Ollama is unreachable at {settings.ollama_base_url}: {exc}") from exc
-    raise OllamaUnavailable(last_error or "no structured-output route available")
+    if r.status_code == 404:
+        if "model" in r.text.lower():
+            raise OllamaUnavailable(f"Decision model '{settings.decision_model}' is not installed in Ollama. "
+                                    f"Run: ollama pull {settings.decision_model}")
+        raise OllamaUnavailable(f"Ollama doesn't serve {settings.nimble_path}; the decision API needs Ollama 0.35 or newer")
+    if r.status_code != 200:
+        raise OllamaUnavailable(f"Ollama {settings.nimble_path} returned {r.status_code}: {r.text[:300].strip()}")
+    answers = r.json().get("answers")
+    if not isinstance(answers, dict) or not all(isinstance(answers.get(q), dict) for q in questions):
+        raise OllamaUnavailable(f"{settings.nimble_path} returned no answers for {', '.join(questions)}")
+    return answers
+
+
+async def structured_chat(system: str, prompt: str, schema: dict) -> dict:
+    """gemma3 structured outputs: POST /api/chat with a JSON-schema `format`. Returns the parsed JSON."""
+    payload = {"model": settings.llm_model, "stream": False, "format": schema, "options": {"temperature": 0},
+               "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]}
+    try:
+        async with _client() as client:
+            r = await client.post("/api/chat", json=payload)
+    except (httpx.HTTPError, OSError) as exc:
+        raise OllamaUnavailable(f"Ollama is unreachable at {settings.ollama_base_url}: {exc}") from exc
+    if r.status_code == 404:
+        raise OllamaUnavailable(f"Language model '{settings.llm_model}' is not installed in Ollama. "
+                                f"Run: ollama pull {settings.llm_model}")
+    if r.status_code != 200:
+        raise OllamaUnavailable(f"Ollama /api/chat returned {r.status_code}: {r.text[:300].strip()}")
+    try:
+        return json.loads((r.json().get("message") or {}).get("content") or "")
+    except ValueError as exc:
+        raise OllamaUnavailable(f"'{settings.llm_model}' did not return valid JSON") from exc
 
 
 def image_b64(data: bytes) -> str:

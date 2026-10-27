@@ -130,19 +130,38 @@ function Recommendation({ rec }) {
       <div className="card-header">
         <span className="label">Recommendation</span>
         <span className="font-mono text-[11px] text-slate-500">
-          {rec.source === "model" ? `${rec.model} via ${rec.route}` : rec.source}
+          {rec.route ? `${rec.model} via ${rec.route}` : rec.source}
         </span>
       </div>
       <div className="space-y-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <span className={`tag ${REASON_TAG[rec.reason_code] || "tag-slate"} font-mono text-xs`}>{rec.reason_code}</span>
           {!noChange && <span className="text-xs font-semibold text-slate-800">{rec.recommended_card}</span>}
-          {rec.confidence != null && rec.source === "model" && (
+          {rec.confidence != null && !Object.keys(rec.probabilities || {}).length && (
             <span className="text-[11px] text-slate-500">confidence {Math.round(rec.confidence * 100)}%</span>
           )}
         </div>
         <p className="text-sm font-medium text-slate-900">{rec.action}</p>
         <p className="text-xs text-slate-600">{rec.rationale}</p>
+        {Object.keys(rec.probabilities || {}).length > 0 && (
+          <div className="space-y-1">
+            <div className="label">Decision probabilities</div>
+            {Object.entries(rec.probabilities)
+              .sort((a, b) => b[1] - a[1])
+              .map(([code, p]) => (
+                <div key={code} className="flex items-center gap-2 text-[11px]">
+                  <span className="w-44 truncate font-mono text-slate-600">{code}</span>
+                  <div className="h-1.5 flex-1 rounded-full bg-slate-100">
+                    <div
+                      className={`h-1.5 rounded-full ${code === rec.reason_code ? "bg-emerald-500" : "bg-slate-300"}`}
+                      style={{ width: `${Math.max(1, p * 100)}%` }}
+                    />
+                  </div>
+                  <span className="w-10 text-right font-mono tabular-nums text-slate-500">{Math.round(p * 100)}%</span>
+                </div>
+              ))}
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <div className="rounded border border-slate-200 px-3 py-2">
             <div className="label">Fees saved</div>
@@ -161,7 +180,9 @@ function Recommendation({ rec }) {
         {rec.warnings.map((w) => (
           <div key={w} className="rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800">{w}</div>
         ))}
-        {rec.error && <div className="text-[11px] text-slate-500">Model unavailable: {rec.error}</div>}
+        {(rec.notes || []).map((n) => (
+          <div key={n} className="text-[11px] text-slate-500">{n}</div>
+        ))}
       </div>
     </div>
   );
@@ -276,7 +297,7 @@ export default function CardOptimizer() {
               <div className="border-t border-slate-100 p-3">
                 <button className="btn-primary w-full" onClick={() => analyse(t.id)} disabled={!!busy}>
                   {busy === t.id ? <Spinner /> : <SparkIcon />}
-                  {busy === t.id ? "Evaluating corridor…" : rec ? "Re-evaluate with gemma3" : "Recommend route with gemma3"}
+                  {busy === t.id ? "Evaluating corridor…" : rec ? "Re-evaluate route" : "Recommend route"}
                 </button>
               </div>
             </div>

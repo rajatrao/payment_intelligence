@@ -38,12 +38,12 @@ flowchart LR
             be["backend<br/>FastAPI + Uvicorn<br/>:8000"]
             vol[("chroma-data volume<br/>Chroma vector store")]
         end
-        ollama["Ollama<br/>:11434<br/>gemma3:4b · embeddinggemma-2"]
+        ollama["Ollama 0.35+<br/>:11434<br/>gemma3:4b · embeddinggemma-2 · nimble"]
     end
     user -- "HTTP :3000" --> fe
     fe -- "/api/* reverse proxy" --> be
     be -- "embedded client<br/>/data/chroma" --> vol
-    be -- "host.docker.internal:11434<br/>/api/embed · /api/generate · /api/chat" --> ollama
+    be -- "host.docker.internal:11434<br/>/api/embed · /api/generate · /api/chat · /v1/systemone" --> ollama
 ```
 
 ## 2. Containers and runtime
@@ -73,7 +73,7 @@ backend/app/
 │       └── recurring.py        Liquidity Guard dataset (provisioned, unused until unlocked)
 └── services/
     ├── extraction.py       File-type detection, PDF text layer (pypdf, no OCR), chunking
-    ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON field extraction
+    ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON, nimble decisions
     ├── fields.py           gemma3:4b reads merchant, total, date, reference, description from PDF text or a photo
     ├── vector_store.py     Chroma collection "evidence": embed each document once, store and reuse its vectors
     ├── matching.py         Facet × stored-chunk cosine matrix, field checks, composite score
@@ -81,7 +81,7 @@ backend/app/
     ├── pdf_builder.py      ReportLab: EUROSITES invoice + legal chargeback package, Exhibit A merge (pypdf)
     ├── samples.py          Sample evidence library: 5 documents that back a transaction, 3 decoys
     ├── corridor.py         Card Optimizer engine: normalise, corridor, friction, per-card fees, rule recommendation
-    └── card_optimizer.py   gemma3 structured-JSON recommendation, checked against corridor.py
+    └── card_optimizer.py   Decision-model recommendation (nimble), gemma3 and rule fallbacks
 ```
 
 ```mermaid
@@ -653,7 +653,7 @@ Interactive docs: http://localhost:8000/docs
 | GET | `/api/disputes/cases/{case_id}` | Poll case status | DisputeCase / 404 |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package, inline (`?download=true` for attachment) | `application/pdf` / 404 until ready |
 | GET | `/api/card-optimizer/payments` | `{cards, payments, recommendations}`: the portfolio, every payment's analysis (normalised transaction, corridor, signals, tags, current fee, per-card options, rule answer) and recommendations made so far | JSON |
-| POST | `/api/card-optimizer/payments/{id}/recommend` | Ask gemma3 for the reason code and card; validated against the rule engine, savings computed by the engine | Recommendation JSON / 404 |
+| POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for the reason code and card (gemma3, then rules, as fallbacks); validated against the rule engine, savings computed by the engine | Recommendation JSON / 404 |
 | GET, POST | `/api/liquidity-guard/*` | Locked module | `423 {"locked": true, "detail": "…"}` |
 
 ## 12. Configuration
@@ -664,9 +664,10 @@ All settings are environment variables, read in `config.py` and passed through `
 | Variable | Default | Used by |
 | --- | --- | --- |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | All Ollama calls |
-| `OLLAMA_LLM_MODEL` | `gemma3:4b` | Field extraction (PDF text and photos), letter generation, Card Optimizer recommendations |
+| `OLLAMA_LLM_MODEL` | `gemma3:4b` | Field extraction (PDF text and photos), letter generation, Card Optimizer fallback |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` | Matching, text and image (only model used; no fallback) |
-| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Card Optimizer structured JSON, tried first; falls back to `/api/chat` on 404/405. Empty skips it. |
+| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Ollama's decision API (Ollama 0.35+), Card Optimizer |
+| `OLLAMA_DECISION_MODEL` | `nimble` | Decision model for the Card Optimizer |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | All Ollama calls |
 | `ALLOW_OFFLINE_FALLBACK` | `true` | Letter only: `false` fails the case instead of using the template letter |
 | `CHROMA_DIR` | `/tmp/payment_intelligence/chroma` (`/data/chroma` in Docker, on the `chroma-data` volume) | Chroma vector store |
@@ -693,8 +694,8 @@ All settings are environment variables, read in `config.py` and passed through `
 | Backend restart | Match results, cases and packages lost (match again); stored embeddings survive in Chroma | 404 "match it again" |
 | `OLLAMA_EMBED_MODEL` changed | Stored vectors from the old model are ignored, deleted and re-embedded on next use | Match results say "embedded and stored in Chroma" |
 | Same file uploaded again | Vectors reused, only facets embedded | Match results say "reused from Chroma" |
-| Card Optimizer: `/v1/systemone` not served (stock Ollama) | Falls back to `/api/chat` with a JSON-schema `format` | "gemma3:4b via /api/chat" on the recommendation |
-| Card Optimizer: Ollama or gemma3 unavailable | The rule engine's answer is shown with a template action | "rules (model unavailable)" and the error on the recommendation |
+| Card Optimizer: Ollama older than 0.35 (no `/v1/systemone`) or `nimble` not pulled | gemma3 makes the choice through `/api/chat` with a JSON-schema `format` | "gemma3:4b via /api/chat" and a note saying why |
+| Card Optimizer: Ollama unavailable | The rule engine's answer is shown | "rules (models unavailable)" and the errors under the recommendation |
 | Card Optimizer: model picks an ineligible card | The rule engine's card is used; a warning is added | Amber warning on the recommendation |
 | Card Optimizer: model disagrees with the rule engine | The model's answer is shown; the rule's answer is shown next to it | "Rule check: disagrees" note |
 
@@ -709,7 +710,7 @@ flowchart LR
     norm --> opts["card_options()<br/>fee and eligibility per card"]
     fric --> opts
     opts --> rule["rule_recommendation()"]
-    opts --> llm["gemma3:4b<br/>JSON schema: reason code + card id"]
+    opts --> llm["nimble via /v1/systemone<br/>choice: reason code · choice: card"]
     rule --> check["recommend()<br/>validate, compare, price"]
     llm --> check
     check --> ui["Recommendation card"]
@@ -729,11 +730,13 @@ flowchart LR
    `SCA_BYPASS_CORRIDOR`; regional block → `INTER-REGIONAL_ROUTING`; saving under `MIN_SAVING_USD` (10) →
    `NO_CHANGE`; best card removes the FX fee → `FX_INTERBANK_MATCH`; otherwise `INTER-REGIONAL_ROUTING`. No
    eligible card → `NO_CHANGE`.
-5. **Model answer** (`card_optimizer.recommend`). The payment, corridor, friction and card table go to gemma3
-   through `ollama_client.structured_chat` with a JSON schema: `reason_code` (enum of the three codes plus
-   `NO_CHANGE`), `recommended_card_id` (enum of portfolio ids), `action`, `rationale`, `confidence`. Temperature 0.
-6. **Check and price.** An ineligible card is replaced by the rule's card with a warning. `agrees_with_rules`
-   compares code and card. `fees_saved_usd` and `recovered_usd` come from `corridor.savings`, never the model:
+5. **Decision** (`card_optimizer.recommend`). The payment, corridor and friction go to Ollama's decision API as
+   `state`, with two `choice` questions: `reason_code` (the three codes plus `NO_CHANGE`, each with a description)
+   and `card` (one option per portfolio card, described with its issuer, region, fee and eligibility). See the
+   request below.
+6. **Check and price.** Questions are scored independently, so the two answers are checked together here: an
+   ineligible card is replaced by the rule's card with a warning, and `agrees_with_rules` compares code and card.
+   The action and rationale are written from the engine's facts, since a decision model writes no text. `fees_saved_usd` and `recovered_usd` come from `corridor.savings`, never the model:
    for a failed payment, recovered is its USD amount when the card is eligible.
 
 Rule answers on the mock data:
@@ -749,12 +752,39 @@ Rule answers on the mock data:
 | `txn_xb_07` Booking.com (NL, EUR, US Mastercard) | 3DS challenge pending | `SCA_BYPASS_CORRIDOR` → IE lodged card |
 | `txn_xb_08` Shopify (CA, CAD, US Visa) | Small FX fee | `NO_CHANGE` |
 
-### Structured-JSON route
+### Decision API
 
-`OLLAMA_NIMBLE_PATH` (default `/v1/systemone`) is tried first. Stock Ollama doesn't serve it, so a 404 or 405
-falls through to `POST /api/chat` with the schema as `format`. The response parser accepts Ollama chat
-(`message.content`), generate (`response`) and OpenAI-style (`choices[0].message.content`) bodies. The route used
-is returned and shown in the UI.
+Ollama 0.35 added `POST /v1/systemone` for decision models (`ollama pull nimble`, a 9B model). A decision model
+only picks from the options it is given and returns a probability for each; it writes no text. Choice questions
+take 2 to 26 options, and the request must fit nimble's 8,192-token context. `ollama_client.decide` sends:
+
+```json
+{
+  "model": "nimble",
+  "state": {
+    "payment": {"merchant": "OVH SAS", "amount": 2310.4, "currency": "EUR", "status": "DECLINED",
+                "decline_code": "1A", "decline_text": "SCA_REQUIRED / soft decline - …"},
+    "corridor": "US (NA) -> FR (EU), inter-regional: True",
+    "friction": {"sca_challenge": true, "regional_block": false, "failed": true},
+    "current_fee_usd": 99.81
+  },
+  "questions": {
+    "reason_code": {"type": "choice", "instructions": "Which routing action fixes this payment's friction at the lowest cost?",
+                    "criteria": {"SCA_BYPASS_CORRIDOR": "…", "FX_INTERBANK_MATCH": "…",
+                                 "INTER-REGIONAL_ROUTING": "…", "NO_CHANGE": "…"}},
+    "card": {"type": "choice", "instructions": "Which company card should this payment be routed through? …",
+             "criteria": {"card_eu_lodged": "Mastercard Lodged Virtual (IE) ****3310, issued in IE (EU), fee 0.00 USD (0 bps), eligible", "…": "…"}}
+  }
+}
+```
+
+and reads `answers.reason_code.choice`, `answers.card.choice`, their `probabilities` and `confidence`. The
+reason-code probabilities are shown as bars on the recommendation.
+
+Fallbacks: if Ollama returns 404 (Ollama older than 0.35, or `nimble` not pulled), `structured_chat` asks gemma3
+for the same two fields through `POST /api/chat` with a JSON-schema `format` (enums for the reason code and card
+id). If that fails too, the rule engine's answer is used. The model, route and fallback reason are returned and
+shown in the UI.
 
 ### Module gating
 
@@ -766,7 +796,7 @@ Locking is enforced in both layers:
 
 Reserved for Liquidity Guard, not wired yet:
 
-- The boolean classification "variable usage-based consumption line", through `structured_chat`.
+- The boolean classification "variable usage-based consumption line", through the decision API (a `noul` question).
 - Mock dataset in `data/transactions/recurring.py`.
 
 To unlock a module: add its service module and routes, remove its key from `LOCKS` in `main.py`, set

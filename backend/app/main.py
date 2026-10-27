@@ -64,6 +64,7 @@ def _pdf_response(data: bytes, filename: str, download: bool) -> Response:
 async def health():
     return {"status": "ok", "ollama": await ollama_status(), "vector_store": vector_store.stats(),
             "config": {"llm_model": settings.llm_model, "embed_model": settings.embed_model,
+                       "decision_model": settings.decision_model,
                        "nimble_path": settings.nimble_path, "offline_fallback": settings.allow_offline_fallback}}
 
 
