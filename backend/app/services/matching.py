@@ -3,12 +3,17 @@
 - Text PDFs: transaction facets x document chunks cosine-similarity matrix, blended with deterministic field
   checks (amount, date, merchant, reference).
 - JPEGs: the image itself is embedded in the same vector space and compared with each transaction facet.
+  Image-to-text cosines run high for every text (0.5-0.7 is common), so an image is scored by how far its
+  similarity to a transaction stands above its similarity to the rest of the dispute queue, not by raw cosine.
 """
 
 import math
 import re
+import statistics
 from datetime import date, timedelta
 
+from app.config import settings
+from app.data.transactions import DISPUTE_TRANSACTIONS
 from app.services.ollama_client import embed_texts
 from app.services.vector_store import IMAGE_LABEL
 
@@ -79,10 +84,15 @@ def field_checks(txn: dict, text: str) -> list[dict]:
 # prompt and stored in Chroma by vector_store.py.
 QUERY_PREFIX = "task: search result | query: "
 
-# Map raw cosine into 0..1. Text-to-text cosines for related passages rarely drop below ~0.2; text-to-image
-# cosines run lower. Both ranges are starting points to re-tune against embeddinggemma-2 output.
+# Map raw cosine into 0..1. Text-to-text cosines for related passages rarely drop below ~0.2.
 TEXT_RANGE = (0.2, 0.6)
-IMAGE_RANGE = (0.1, 0.4)
+# Images: a facet scores 1.0 when its cosine with the image is IMAGE_MARGIN above the median cosine of the same
+# facet across the dispute queue, and 0 at or below that median. Re-tune with scripts/check_image_embeddings.py.
+IMAGE_MARGIN = 0.06
+IMAGE_TOP_FACETS = 3
+
+# Facet vectors are deterministic for a given text and model, so they are cached for the process.
+_FACET_CACHE: dict[tuple[str, str], list[float]] = {}
 
 
 def _verdict(score: float) -> str:
@@ -93,13 +103,30 @@ def _semantic(best_per_facet: list[float], floor: float, span: float) -> float:
     return sum(max(0.0, min(1.0, (s - floor) / span)) for s in best_per_facet) / len(best_per_facet)
 
 
-async def match_evidence(txn: dict, doc: dict, document_text: str) -> dict:
-    """Score stored evidence (see vector_store.index_document) against a transaction. Only the transaction
-    facets are embedded here; the evidence vectors come from Chroma."""
+async def _facet_vectors(txn: dict) -> tuple[dict, list[list[float]], str]:
     facets = transaction_facets(txn)
-    facet_vecs, model_used = await embed_texts([QUERY_PREFIX + f for f in facets.values()])
+    texts = [QUERY_PREFIX + f for f in facets.values()]
+    missing = [t for t in texts if (settings.embed_model, t) not in _FACET_CACHE]
+    if missing:
+        vecs, _ = await embed_texts(missing)
+        _FACET_CACHE.update({(settings.embed_model, t): v for t, v in zip(missing, vecs)})
+    return facets, [_FACET_CACHE[(settings.embed_model, t)] for t in texts], settings.embed_model
+
+
+async def match_evidence(txn: dict, doc: dict, document_text: str, queue: list[dict] | None = None) -> dict:
+    """Score stored evidence (see vector_store.index_document) against a transaction. Only the transaction
+    facets are embedded here; the evidence vectors come from Chroma. Images are scored relative to `queue`
+    (default: every disputed transaction)."""
+    facets, facet_vecs, model_used = await _facet_vectors(txn)
     if doc["kind"] == "jpeg":
-        result = _match_image(txn, facets, facet_vecs, doc["vectors"][0], model_used)
+        image_vec = doc["vectors"][0]
+        baseline = [[] for _ in facet_vecs]
+        for other in queue or DISPUTE_TRANSACTIONS:
+            _, other_vecs, _ = await _facet_vectors(other)
+            for i, v in enumerate(other_vecs):
+                baseline[i].append(cosine(v, image_vec))
+        medians = [statistics.median(b) for b in baseline]
+        result = _match_image(txn, facets, facet_vecs, image_vec, medians, model_used)
     else:
         result = _match_text(txn, facets, facet_vecs, doc["chunks"], doc["vectors"], document_text, model_used)
     return {**result, "doc_id": doc["doc_id"], "vectors_cached": doc["cached"]}
@@ -147,11 +174,15 @@ def _match_text(txn: dict, facets: dict, facet_vecs: list, chunks: list[str], ch
     }
 
 
-def _match_image(txn: dict, facets: dict, facet_vecs: list, image_vec: list, model_used: str) -> dict:
+def _match_image(txn: dict, facets: dict, facet_vecs: list, image_vec: list, medians: list[float],
+                 model_used: str) -> dict:
     facet_names = list(facets)
 
     matrix = [[round(cosine(f, image_vec), 4)] for f in facet_vecs]
-    semantic = _semantic([row[0] for row in matrix], *IMAGE_RANGE)
+    # Lift of each facet over the queue median: only what sets this transaction apart from the others counts.
+    # A photo rarely shows every detail legibly, so the score uses the IMAGE_TOP_FACETS facets that lift most.
+    lifts = sorted((row[0] - m for row, m in zip(matrix, medians)), reverse=True)
+    semantic = _semantic(lifts[:IMAGE_TOP_FACETS], 0.0, IMAGE_MARGIN)
     # Exact field checks need text, so an image is scored on the embedding alone.
     checks = [{**c, "matched": False, "applicable": False} for c in field_checks(txn, "")]
     strongest = max(row[0] for row in matrix)
@@ -170,8 +201,10 @@ def _match_image(txn: dict, facets: dict, facet_vecs: list, image_vec: list, mod
         "matrix": matrix,
         "field_checks": checks,
         "top_evidence": [{"chunk_index": 0, "similarity": round(strongest, 4), "text": IMAGE_LABEL}],
-        "note": "Image evidence is embedded directly by the multimodal model and compared with each transaction "
-        "detail. Exact amount/date/merchant checks need text, so they are not applied.",
+        "image_baseline": [round(m, 4) for m in medians],
+        "note": "Image evidence is embedded directly by the multimodal model. Image-to-text similarity is high for "
+        "any text, so the score measures how much more the image resembles this transaction than the rest of the "
+        "dispute queue. Exact amount/date/merchant checks need text, so they are not applied.",
         "purpose_evidence": {"chunk_index": 0, "similarity": matrix[facet_names.index("purpose")][0],
                              "text": IMAGE_LABEL},
     }

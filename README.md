@@ -141,6 +141,7 @@ docker compose up --build
 | --- | --- |
 | Badge red: "Ollama unreachable" | Make sure Ollama is running (`curl http://localhost:11434/api/tags`). If that works but the container still can't reach it, make Ollama listen on all interfaces and restart it. macOS: `launchctl setenv OLLAMA_HOST "0.0.0.0"`, then quit and reopen the Ollama app. Linux: `sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0"` under `[Service]`, then `sudo systemctl restart ollama`. |
 | Linux: `host.docker.internal` doesn't resolve | Already handled by `extra_hosts: host-gateway` in `docker-compose.yml`; make sure you're on Docker 20.10+. |
+| Every photo scores the same, or "Ollama did not read the image" | Update Ollama, check `ollama show embeddinggemma-2` lists `vision`, then run `python3 scripts/check_image_embeddings.py` |
 | `ollama pull` says "requires a newer version of Ollama" | Update Ollama (download the latest from ollama.com, or `brew upgrade ollama`), restart it, then pull again |
 | Case fails: "Embedding model 'embeddinggemma-2' is not installed" | `ollama pull embeddinggemma-2` |
 | JPEG case fails with an Ollama error | Check you're using an image-capable tag (default, `:740m` or `:440m`), and update Ollama. |
@@ -187,6 +188,7 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 ├── docker-compose.yml          backend + frontend services
 ├── .env.example                configuration overrides
 ├── docs/ARCHITECTURE.md        architecture blueprint
+├── scripts/                    check_image_embeddings.py: verify and tune image matching on real Ollama
 ├── backend/                    Python 3.12 · FastAPI
 │   ├── Dockerfile              python:3.12-slim
 │   ├── requirements.txt

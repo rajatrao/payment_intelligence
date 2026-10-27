@@ -18,7 +18,7 @@ import chromadb
 
 from app.config import settings
 from app.services.extraction import chunk_text
-from app.services.ollama_client import embed_image, embed_texts
+from app.services.ollama_client import OllamaUnavailable, embed_image, embed_texts
 
 log = logging.getLogger("vector_store")
 
@@ -36,6 +36,27 @@ def _collection():
     # Vectors are supplied by EmbeddingGemma 2, so Chroma's own embedding function is never used.
     return client.get_or_create_collection(COLLECTION, embedding_function=None,
                                            metadata={"hnsw:space": "cosine"})
+
+
+_BLANK: dict[str, list[float]] = {}
+
+
+def _cos(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na, nb = sum(x * x for x in a) ** 0.5, sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+async def _check_image_read(vector: list[float]) -> None:
+    """Ollama falls back to embedding the text alone when it can't read an image. Our image items carry empty
+    text, so an unread image comes back as the empty-text vector: catch that instead of scoring it."""
+    if settings.embed_model not in _BLANK:
+        _BLANK[settings.embed_model] = (await embed_texts([""]))[0][0]
+    if _cos(vector, _BLANK[settings.embed_model]) > 0.98:
+        raise OllamaUnavailable(
+            f"Ollama did not read the image: '{settings.embed_model}' returned the same vector as empty text. "
+            f"Update Ollama, check that `ollama show {settings.embed_model}` lists the vision capability, and use "
+            f"an image-capable tag (latest, :740m or :440m).")
 
 
 def document_id(data: bytes) -> str:
@@ -56,10 +77,17 @@ async def index_document(data: bytes, filename: str, kind: str, text: str, sourc
     """Return the document's stored sections and vectors, embedding and storing them first if needed."""
     doc_id = document_id(data)
     if (hit := _stored(doc_id)) is not None:
-        return hit
+        if kind != "jpeg":
+            return hit
+        try:
+            await _check_image_read(hit["vectors"][0])
+            return hit
+        except OllamaUnavailable:
+            log.warning("Stored vector for %s looks like an unread image; re-embedding", filename)
 
     if kind == "jpeg":
         chunks, vectors = [IMAGE_LABEL], [await embed_image(data)]
+        await _check_image_read(vectors[0])
     else:
         chunks = chunk_text(text) or [NO_TEXT_LABEL]
         vectors, _ = await embed_texts([DOC_PREFIX + c for c in chunks])

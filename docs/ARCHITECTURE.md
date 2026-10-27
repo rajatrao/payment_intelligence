@@ -539,8 +539,18 @@ flowchart LR
 
 **Image evidence (JPEG).** EmbeddingGemma 2 maps text and images into one vector space, so a JPEG is embedded
 as an image (`/api/embed` input item `{"text": "", "image": <base64 JPEG, max 1024 px>}`) and the matrix is
-5 facets × 1 image. Cross-modal cosines run lower, so the rescale range is `(s − 0.1) / 0.4`. Field checks need
-text and are shown as N/A, so the image score is the semantic score alone (`mode: "image"`, weight 1.0).
+5 facets × 1 image. Image-to-text cosines are high for *any* text (0.5 to 0.7 is typical), so a raw cosine says
+little. Instead each facet's cosine is compared with the median cosine of the same facet across the whole dispute
+queue (`image_baseline`): the lift over that median is rescaled `lift / 0.06` (`IMAGE_MARGIN`) and clamped to 0..1,
+and the score is the mean of the 3 largest lifts (`IMAGE_TOP_FACETS`, since a photo rarely shows every detail).
+An image therefore only matches a transaction it resembles clearly more than the others. Field checks need text
+and are shown as N/A, so the image score is this relative semantic score alone (`mode: "image"`, weight 1.0).
+Facet vectors are cached per process, so scoring against the queue costs no extra Ollama calls after the first.
+
+Ollama embeds an image it can't read from its text alone. Image items carry empty text, so an unread image comes
+back equal to the empty-text vector; `vector_store.py` detects that (cosine > 0.98) and fails with a clear
+message instead of scoring it. `scripts/check_image_embeddings.py` prints the raw cosines, queue medians and
+scores for the sample photos, to confirm images are read and to tune `IMAGE_MARGIN` on real output.
 The image request shape comes from community usage; Ollama's model page doesn't document it, so confirm it on a
 real install. A text-only tag (`:270m`, `:570m`) will make image cases fail with Ollama's error.
 
@@ -630,7 +640,8 @@ All settings are environment variables, read in `config.py` and passed through `
 | gemma2 not installed (404) | Next tag in `OLLAMA_TEXT_MODEL_FALLBACKS`, then the template letter | Letter stage shows the model used; "Template letter" tag; PDF footer and note |
 | `ALLOW_OFFLINE_FALLBACK=false` and no gemma2 | Letter stage fails; the case goes to `failed` | Red stage, error banner |
 | JPEG evidence | Embedded as an image; field checks N/A; `note` explains | Amber note in the match panel |
-| Model tag can't embed images, or Ollama rejects the image request | Match returns 503 with Ollama's error text | Red stage, error banner |
+| Model tag can't embed images, or Ollama rejects the image request | Match returns 503 with Ollama's error text | Error banner |
+| Ollama ignores the image (returns the empty-text vector) | Match returns 503: "Ollama did not read the image…" | Error banner |
 | Scanned PDF (no text layer) | Score near zero; `note` suggests uploading as JPEG; still attached as Exhibit A | Amber note in the match panel |
 | Malformed evidence PDF | Text extraction returns empty; Exhibit A merge is skipped, the package still renders | Match note |
 | Wrong file type | `415` before any processing | Error banner |
