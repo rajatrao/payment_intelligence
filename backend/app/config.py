@@ -14,14 +14,15 @@ class Settings:
     # Ollama runs on the host machine; containers reach it via host.docker.internal.
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
 
-    # Auto-Dispute Concierge: dispute letter generation.
-    text_model: str = os.getenv("OLLAMA_TEXT_MODEL", "gemma2:2b")
-    text_model_fallbacks: list[str] = field(default_factory=lambda: _csv("OLLAMA_TEXT_MODEL_FALLBACKS", "gemma2:9b,gemma2"))
 
     # Auto-Dispute Concierge: evidence matching via /api/embed with EmbeddingGemma 2 (multimodal: text and images share one
     # vector space). Use an image-capable tag: embeddinggemma-2 (= :740m) or :440m. Only this model is used for
     # matching; there is no substitute embedder.
     embed_model: str = os.getenv("OLLAMA_EMBED_MODEL", "embeddinggemma-2")
+
+    # Auto-Dispute Concierge: one vision-capable language model reads merchant, amount, date and reference from
+    # PDF text and photos (exact checks then compare them with the transaction) and writes the dispute letter.
+    llm_model: str = os.getenv("OLLAMA_LLM_MODEL", "gemma3:4b")
 
     # Card Optimizer & Liquidity Guard (not yet available): structured-primitive endpoint. Declared here so the wiring is visible.
     nimble_path: str = os.getenv("OLLAMA_NIMBLE_PATH", "/v1/systemone")

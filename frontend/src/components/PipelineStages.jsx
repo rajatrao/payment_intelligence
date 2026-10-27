@@ -1,7 +1,7 @@
 import { Spinner } from "./Icons.jsx";
 
 const LABELS = {
-  generate_letter: "gemma2 letter",
+  generate_letter: "gemma3 letter",
   render_pdf: "ReportLab PDF",
 };
 

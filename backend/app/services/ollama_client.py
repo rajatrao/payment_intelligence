@@ -2,13 +2,15 @@
 
 - Embeddings: POST {base}/api/embed {"model": ..., "input": [...]} (text strings, or {"text", "image"} objects)
 - Text:       POST {base}/api/generate   {"model": ..., "system": ..., "prompt": ..., "stream": false}
+- Fields:     POST {base}/api/generate   {"model": ..., "format": <JSON schema>, "images": [...]}
 
 Embeddings use exactly one model (embeddinggemma-2, multimodal) and fail loudly if it is unavailable.
-Text generation tries the configured gemma2 tag, then its fallback tags; the template-letter fallback
-lives in letter.py.
+One language model (gemma3:4b, vision-capable) reads evidence fields and writes letters; the template-letter
+fallback lives in letter.py.
 """
 
 import base64
+import json
 import io
 import logging
 
@@ -49,7 +51,7 @@ async def ollama_status() -> dict:
     return {
         "reachable": True,
         "base_url": settings.ollama_base_url,
-        "text_model": resolve([settings.text_model, *settings.text_model_fallbacks]),
+        "llm_model": resolve([settings.llm_model]),
         "embed_model": resolve([settings.embed_model]),
         "installed": sorted(installed),
     }
@@ -104,25 +106,52 @@ async def embed_image(data: bytes) -> list[float]:
     return vectors[0]
 
 
+# ---------------------------------------------------------------- structured extraction
+
+async def generate_json(prompt: str, schema: dict, image_b64: str | None = None) -> dict:
+    """Ask the vision model for JSON matching `schema` (Ollama structured outputs). Raises OllamaUnavailable."""
+    payload = {"model": settings.llm_model, "prompt": prompt, "format": schema, "stream": False,
+               "options": {"temperature": 0}}
+    if image_b64:
+        payload["images"] = [image_b64]
+    try:
+        async with _client() as client:
+            r = await client.post("/api/generate", json=payload)
+    except (httpx.HTTPError, OSError) as exc:
+        raise OllamaUnavailable(f"Ollama is unreachable at {settings.ollama_base_url}: {exc}") from exc
+    if r.status_code == 404:
+        raise OllamaUnavailable(f"Language model '{settings.llm_model}' is not installed in Ollama. "
+                                f"Run: ollama pull {settings.llm_model}")
+    if r.status_code != 200:
+        raise OllamaUnavailable(f"Ollama /api/generate returned {r.status_code} for '{settings.llm_model}': "
+                                f"{r.text[:300].strip()}")
+    try:
+        return json.loads(r.json().get("response") or "{}")
+    except ValueError as exc:
+        raise OllamaUnavailable(f"'{settings.llm_model}' did not return valid JSON") from exc
+
+
+def image_b64(data: bytes) -> str:
+    return _jpeg_b64(data)
+
+
 # ---------------------------------------------------------------- generation
 
 async def generate(system: str, prompt: str, temperature: float = 0.25) -> tuple[str, str]:
-    """Generate text. Returns (text, model used). Raises OllamaUnavailable if nothing works."""
-    errors: list[str] = []
-    payload = {"system": system, "prompt": prompt, "stream": False,
+    """Generate text with the language model. Returns (text, model used). Raises OllamaUnavailable."""
+    model = settings.llm_model
+    payload = {"model": model, "system": system, "prompt": prompt, "stream": False,
                "options": {"temperature": temperature, "num_ctx": 8192}}
     try:
         async with _client() as client:
-            for model in [settings.text_model, *settings.text_model_fallbacks]:
-                r = await client.post("/api/generate", json={**payload, "model": model})
-                if r.status_code == 404:
-                    errors.append(f"{model}: not installed")
-                    continue
-                r.raise_for_status()
-                text = (r.json().get("response") or "").strip()
-                if text:
-                    return text, model
-                errors.append(f"{model}: empty response")
+            r = await client.post("/api/generate", json=payload)
     except (httpx.HTTPError, OSError) as exc:
-        errors.append(f"unreachable: {exc}")
-    raise OllamaUnavailable("; ".join(errors))
+        raise OllamaUnavailable(f"Ollama is unreachable at {settings.ollama_base_url}: {exc}") from exc
+    if r.status_code == 404:
+        raise OllamaUnavailable(f"{model}: not installed (run: ollama pull {model})")
+    if r.status_code != 200:
+        raise OllamaUnavailable(f"{model}: Ollama returned {r.status_code}: {r.text[:200].strip()}")
+    text = (r.json().get("response") or "").strip()
+    if not text:
+        raise OllamaUnavailable(f"{model}: empty response")
+    return text, model

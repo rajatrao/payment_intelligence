@@ -17,8 +17,9 @@ from fastapi.responses import JSONResponse, Response
 from app.config import settings
 from app.data.transactions import DISPUTE_TRANSACTIONS, SAMPLE_TRANSACTION_ID, get_transaction
 from app.services.extraction import detect_kind, extract_text
+from app.services.fields import extract_fields
 from app.services.letter import generate_letter
-from app.services.matching import match_evidence
+from app.services.matching import facet_vectors, match_evidence
 from app.services.ollama_client import OllamaUnavailable, ollama_status
 from app.services.pdf_builder import build_chargeback_package
 from app.services.samples import DEFAULT_SAMPLE_ID, get_sample, sample_bytes, sample_metadata
@@ -59,7 +60,7 @@ def _pdf_response(data: bytes, filename: str, download: bool) -> Response:
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "ollama": await ollama_status(), "vector_store": vector_store.stats(),
-            "config": {"text_model": settings.text_model, "embed_model": settings.embed_model,
+            "config": {"llm_model": settings.llm_model, "embed_model": settings.embed_model,
                        "nimble_path": settings.nimble_path, "offline_fallback": settings.allow_offline_fallback}}
 
 
@@ -77,6 +78,64 @@ async def modules():
 @app.get("/api/disputes/transactions")
 async def list_transactions():
     return {"sample_transaction_id": SAMPLE_TRANSACTION_ID, "transactions": DISPUTE_TRANSACTIONS}
+
+
+async def _fields(doc: dict, kind: str, data: bytes | None, text: str) -> tuple[dict | None, str | None]:
+    """gemma3's reading of a document, from the Chroma cache or freshly extracted. Never fatal: without it PDFs
+    still have exact text checks and photos fall back to the embedding alone."""
+    if (cached := vector_store.get_fields(doc["doc_id"])) is not None:
+        return cached, None
+    if data is None:
+        return None, "file bytes not available to read"
+    try:
+        fields = await extract_fields(kind, data, text)
+    except OllamaUnavailable as exc:
+        log.warning("Field extraction skipped for %s: %s", doc["filename"], exc)
+        return None, str(exc)
+    vector_store.set_fields(doc["doc_id"], fields)
+    return fields, None
+
+
+async def _index_sample(sample: dict) -> tuple[dict, str, bytes]:
+    data = sample_bytes(sample["id"])
+    text, _ = await asyncio.to_thread(extract_text, sample["kind"], data)
+    return await vector_store.index_document(data, sample["filename"], sample["kind"], text, "sample"), text, data
+
+
+@app.get("/api/disputes/transactions/{transaction_id}/evidence-search")
+async def search_evidence(transaction_id: str, limit: int = 5):
+    """Find evidence for a transaction across every stored file: Chroma nearest-neighbour search on the
+    transaction's facet vectors gives a shortlist, then each candidate is read by gemma3 and fully matched.
+    The sample library stands in for a document store such as Google Drive."""
+    txn = get_transaction(transaction_id)
+    if not txn:
+        raise HTTPException(404, "Transaction not found")
+    try:
+        samples_by_name = {}
+        for sample in sample_metadata():
+            await _index_sample(sample)
+            samples_by_name[sample["filename"]] = sample
+        _, facet_vecs, _ = await facet_vectors(txn)
+        candidates = vector_store.search(facet_vecs)
+        results = []
+        for hit in candidates[:max(1, min(limit, 20))]:
+            doc = vector_store.load(hit["doc_id"])
+            if doc is None:
+                continue
+            sample, held = samples_by_name.get(hit["filename"]), EVIDENCE.get(hit["doc_id"])
+            data = sample_bytes(sample["id"]) if sample else held["data"] if held else None
+            text = (await asyncio.to_thread(extract_text, hit["kind"], data))[0] if data else (
+                "" if hit["kind"] == "jpeg" else "\n".join(doc["chunks"]))
+            fields, _ = await _fields(doc, hit["kind"], data, text)
+            m = await match_evidence(txn, doc, text, fields)
+            results.append({**hit, "sample_id": sample["id"] if sample else None, "evidence_available": bool(held),
+                            "score": m["score"], "semantic_score": m["semantic_score"],
+                            "field_score": m["field_score"], "verdict": m["verdict"], "extracted": fields})
+    except OllamaUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return {"transaction_id": transaction_id, "searched_documents": vector_store.stats().get("documents"),
+            "candidates": len(candidates), "results": results}
 
 
 @app.get("/api/disputes/transactions/{transaction_id}")
@@ -110,10 +169,9 @@ async def score_samples(transaction_id: str):
         raise HTTPException(404, "Transaction not found")
 
     async def score(sample: dict) -> dict:
-        data = sample_bytes(sample["id"])
-        text, _ = await asyncio.to_thread(extract_text, sample["kind"], data)
-        doc = await vector_store.index_document(data, sample["filename"], sample["kind"], text, "sample")
-        m = await match_evidence(txn, doc, text)
+        doc, text, data = await _index_sample(sample)
+        fields, _ = await _fields(doc, sample["kind"], data, text)
+        m = await match_evidence(txn, doc, text, fields)
         return {"sample_id": sample["id"], "score": m["score"], "semantic_score": m["semantic_score"],
                 "field_score": m["field_score"], "verdict": m["verdict"]}
 
@@ -179,7 +237,8 @@ async def match_evidence_file(file: UploadFile | None = File(None), sample_id: s
     try:
         text, method = await asyncio.to_thread(extract_text, kind, data)
         doc = await vector_store.index_document(data, filename, kind, text, source)
-        matches = {t["id"]: await match_evidence(t, doc, text) for t in DISPUTE_TRANSACTIONS}
+        fields, fields_error = await _fields(doc, kind, data, text)
+        matches = {t["id"]: await match_evidence(t, doc, text, fields) for t in DISPUTE_TRANSACTIONS}
     except OllamaUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
 
@@ -195,6 +254,7 @@ async def match_evidence_file(file: UploadFile | None = File(None), sample_id: s
         "evidence_id": evidence_id, "filename": filename, "kind": kind, "source": source, "method": method,
         "text_preview": text[:1500], "embedding_model": settings.embed_model,
         "vectors": "reused from Chroma" if doc["cached"] else "embedded and stored in Chroma",
+        "extracted": fields, "extraction_error": fields_error,
         "matched_transaction_id": best["transaction_id"] if best else None,
         "ranking": ranking, "matches": matches, "data": data, "text": text,
     }
@@ -242,7 +302,7 @@ async def run_pipeline(case_id: str, txn: dict, ev: dict):
 
 @app.post("/api/disputes/cases", status_code=202)
 async def create_dispute(transaction_id: str = Form(...), evidence_id: str = Form(...)):
-    """Step 2: build the package for matched evidence: gemma2 letter -> ReportLab PDF. The letter is returned in
+    """Step 2: build the package for matched evidence: gemma3 letter -> ReportLab PDF. The letter is returned in
     the case for review; the PDF is only downloaded when the user asks for it."""
     txn = get_transaction(transaction_id)
     if not txn:

@@ -11,6 +11,7 @@ Transaction facets (the queries) are embedded on each match; only evidence is st
 """
 
 import hashlib
+import json
 import logging
 from functools import lru_cache
 
@@ -104,6 +105,47 @@ async def index_document(data: bytes, filename: str, kind: str, text: str, sourc
     log.info("Indexed %s (%s, %d record(s)) as %s", filename, kind, len(chunks), doc_id)
     return {"doc_id": doc_id, "kind": kind, "filename": filename, "chunks": chunks, "vectors": vectors,
             "cached": False}
+
+
+def get_fields(doc_id: str) -> dict | None:
+    """Fields gemma3 extracted for this document, cached on its first record."""
+    got = _collection().get(ids=[f"{doc_id}:0"], include=["metadatas"])
+    meta = got["metadatas"][0] if got["ids"] else {}
+    if meta.get("fields") and meta.get("fields_model") == settings.llm_model:
+        return json.loads(meta["fields"])
+    return None
+
+
+def set_fields(doc_id: str, fields: dict) -> None:
+    rid = f"{doc_id}:0"
+    got = _collection().get(ids=[rid], include=["metadatas"])
+    if got["ids"]:
+        meta = {**got["metadatas"][0], "fields": json.dumps(fields), "fields_model": settings.llm_model}
+        _collection().update(ids=[rid], metadatas=[meta])
+
+
+def load(doc_id: str) -> dict | None:
+    """A stored document's sections and vectors (None if absent or embedded with another model)."""
+    return _stored(doc_id)
+
+
+def search(query_vectors: list[list[float]], per_query: int = 10) -> list[dict]:
+    """Candidate documents for a transaction: nearest records to any facet vector, grouped by document and
+    ordered by their best (lowest) cosine distance. Only documents embedded with the current model count."""
+    collection = _collection()
+    total = collection.count()
+    if not total:
+        return []
+    res = collection.query(query_embeddings=query_vectors, n_results=min(per_query, total),
+                           where={"model": settings.embed_model}, include=["metadatas", "distances"])
+    best: dict[str, dict] = {}
+    for metas, dists in zip(res["metadatas"], res["distances"]):
+        for meta, dist in zip(metas, dists):
+            hit = best.get(meta["doc_id"])
+            if hit is None or dist < hit["distance"]:
+                best[meta["doc_id"]] = {"doc_id": meta["doc_id"], "filename": meta["filename"], "kind": meta["kind"],
+                                        "source": meta["source"], "distance": round(dist, 4)}
+    return sorted(best.values(), key=lambda h: h["distance"])
 
 
 def stats() -> dict:

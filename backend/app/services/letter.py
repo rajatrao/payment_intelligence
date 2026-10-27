@@ -1,4 +1,4 @@
-"""Chargeback argument letter orchestration targeting the local gemma2 model."""
+"""Chargeback argument letter orchestration targeting the local gemma3 model."""
 
 import logging
 import re
@@ -70,7 +70,7 @@ def clean_letter(text: str) -> str:
 
 
 def template_letter(txn: dict, match: dict, today: str) -> str:
-    """Deterministic fallback used only when Ollama/gemma2 is unavailable."""
+    """Deterministic fallback used only when Ollama/gemma3 is unavailable."""
     quoted = match["purpose_evidence"]["text"].replace("\n", " ")[:300]
     statement = (txn.get("memo") or txn["dispute_reason"]).rstrip(". ")
     matched = ", ".join(c["field"].split(" ")[0].lower() for c in match["field_checks"] if c["matched"]) or "none"

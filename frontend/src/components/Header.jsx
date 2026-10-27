@@ -21,10 +21,11 @@ function OllamaBadge() {
 
   const o = health.ollama;
   if (!o.reachable) return <span className="tag tag-red" title={o.error}>Ollama unreachable · matching unavailable</span>;
-  const ready = o.text_model && o.embed_model;
+  const ready = o.llm_model && o.embed_model;
   return (
     <span className={`tag ${ready ? "tag-green" : "tag-amber"}`} title={o.base_url}>
-      Ollama · {o.text_model || "no gemma2"} · {o.embed_model || `${health.config.embed_model} not installed`}
+      Ollama · {o.llm_model || `${health.config.llm_model} not installed`} ·{" "}
+      {o.embed_model || `${health.config.embed_model} not installed`}
     </span>
   );
 }

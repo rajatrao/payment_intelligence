@@ -186,7 +186,7 @@ def build_chargeback_package(case_id: str, txn: dict, match: dict, letter: dict,
     story += [PageBreak(), _p("Chargeback Argument Letter", "h2")]
     story += [_p(para, "letter") for para in letter["text"].split("\n\n") if para.strip()]
     if letter.get("fallback"):
-        story.append(_p("Note: generated from the offline template because the local gemma2 model was unavailable.",
+        story.append(_p("Note: generated from the offline template because the local gemma3 model was unavailable.",
                         "small"))
 
     ev_rows = [["#", "Similarity", "Matched evidence text"]] + [

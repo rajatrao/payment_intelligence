@@ -38,7 +38,7 @@ flowchart LR
             be["backend<br/>FastAPI + Uvicorn<br/>:8000"]
             vol[("chroma-data volume<br/>Chroma vector store")]
         end
-        ollama["Ollama<br/>:11434<br/>gemma2 · embedding model"]
+        ollama["Ollama<br/>:11434<br/>gemma3:4b · embeddinggemma-2"]
     end
     user -- "HTTP :3000" --> fe
     fe -- "/api/* reverse proxy" --> be
@@ -73,7 +73,8 @@ backend/app/
 │       └── recurring.py        Liquidity Guard dataset (provisioned, unused until unlocked)
 └── services/
     ├── extraction.py       File-type detection, PDF text layer (pypdf, no OCR), chunking
-    ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 text + image embeddings (single model), gemma2 generation
+    ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON field extraction
+    ├── fields.py           gemma3:4b reads merchant, total, date, reference, description from PDF text or a photo
     ├── vector_store.py     Chroma collection "evidence": embed each document once, store and reuse its vectors
     ├── matching.py         Facet × stored-chunk cosine matrix, field checks, composite score
     ├── letter.py           Compliance-officer prompt, filler scrubbing, offline template letter
@@ -250,7 +251,7 @@ sequenceDiagram
         BE-->>FE: DisputeCase (stages update live)
     end
 
-    T->>O: 1. POST /api/generate (gemma2, compliance-officer prompt)
+    T->>O: 1. POST /api/generate (gemma3:4b, compliance-officer prompt)
     O-->>T: letter text
     T->>T: scrub filler / markdown
     T->>T: 2. ReportLab package + append original evidence (Exhibit A)
@@ -371,6 +372,8 @@ erDiagram
         string filename
         string source "upload | sample"
         string model "embeddinggemma-2"
+        json fields "gemma3 reading, record 0 only"
+        string fields_model "gemma3:4b"
     }
     PIPELINE_STAGE {
         string case_id FK
@@ -407,7 +410,7 @@ erDiagram
     DISPUTE_LETTER {
         string case_id FK
         text text
-        string model "gemma2:2b or template (offline fallback)"
+        string model "gemma3:4b or template (offline fallback)"
         bool fallback
         string fallback_reason "nullable"
     }
@@ -448,7 +451,7 @@ document counts under `vector_store`.
   "status": "complete",
   "created_at": "2026-10-27T16:19:26.314176+00:00",
   "stages": {
-    "generate_letter": { "state": "done", "at": "…", "model": "gemma2:2b", "fallback": false },
+    "generate_letter": { "state": "done", "at": "…", "model": "gemma3:4b", "fallback": false },
     "render_pdf":      { "state": "done", "at": "…", "bytes": 9811 }
   },
   "evidence": { "filename": "EUROSITES_ADVERTISING_ESA-INV-2026-0912.pdf", "kind": "pdf",
@@ -469,7 +472,7 @@ document counts under `vector_store`.
     "top_evidence":     [{ "chunk_index": 0, "similarity": 0.48, "text": "…" }],
     "purpose_evidence": { "chunk_index": 3, "similarity": 0.48, "text": "…" }
   },
-  "letter": { "text": "October 27, 2026\n\nVisa Dispute Resolution…", "model": "gemma2:2b", "fallback": false },
+  "letter": { "text": "October 27, 2026\n\nVisa Dispute Resolution…", "model": "gemma3:4b", "fallback": false },
   "package_url": "/api/disputes/cases/CB-20261027-B40DF6/package.pdf"
 }
 ```
@@ -533,7 +536,11 @@ flowchart LR
    - Date: any date 0 to 7 days before the auth date, in ISO, `dd/mm/yyyy`, `mm/dd/yyyy` and long forms.
    - Merchant: at least 50% of the legal-name tokens (4+ letters, minus `ltd/inc/llc/corp`) appear.
    - Invoice ref: exact substring. Skipped (shown as N/A) when the transaction has no reference.
-6. **Composite** = `0.6 × semantic + 0.4 × (checks passed / applicable checks)`.
+   - With gemma3's reading (below), the amount check requires the document's *total* to equal the transaction
+     amount and to appear in the text, so a matching line item on another invoice doesn't count; a date in a
+     format the text check misses can still match from the reading.
+6. **Composite** = `0.6 × semantic + 0.4 × (checks passed / applicable checks)`. If the amount check is applicable
+   and fails, the verdict is WEAK regardless of score: a chargeback stands on the amount.
 7. **Evidence ranking.** Chunks ranked by their strongest facet similarity; the top 4 go into the package.
    The chunk most similar to the *purpose* facet is quoted in the letter.
 
@@ -543,8 +550,9 @@ as an image (`/api/embed` input item `{"text": "", "image": <base64 JPEG, max 10
 little. Instead each facet's cosine is compared with the median cosine of the same facet across the whole dispute
 queue (`image_baseline`): the lift over that median is rescaled `lift / 0.06` (`IMAGE_MARGIN`) and clamped to 0..1,
 and the score is the mean of the 3 largest lifts (`IMAGE_TOP_FACETS`, since a photo rarely shows every detail).
-An image therefore only matches a transaction it resembles clearly more than the others. Field checks need text
-and are shown as N/A, so the image score is this relative semantic score alone (`mode: "image"`, weight 1.0).
+An image therefore only ranks high for a transaction it resembles clearly more than the others. Its field checks
+use the values gemma3 read from the photo (shown as `read:` in the match panel), with the same 60/40 blend and
+amount gate as PDFs. If gemma3 is unavailable, the image is scored on the relative semantic score alone (weight 1.0).
 Facet vectors are cached per process, so scoring against the queue costs no extra Ollama calls after the first.
 
 Ollama embeds an image it can't read from its text alone. Image items carry empty text, so an unread image comes
@@ -553,6 +561,19 @@ message instead of scoring it. `scripts/check_image_embeddings.py` prints the ra
 scores for the sample photos, to confirm images are read and to tune `IMAGE_MARGIN` on real output.
 The image request shape comes from community usage; Ollama's model page doesn't document it, so confirm it on a
 real install. A text-only tag (`:270m`, `:570m`) will make image cases fail with Ollama's error.
+
+**Field extraction (gemma3:4b).** `services/fields.py` sends the PDF text, or the photo as an `images` item, to
+`POST /api/generate` with a JSON schema (`format`), temperature 0. It returns `merchant`, `total_amount`,
+`currency`, `document_date`, `reference`, `description`. For PDFs, `verified` records whether the merchant, total
+and reference actually appear in the pypdf text. The result is cached as JSON in the metadata of the document's
+first Chroma record (`fields`, `fields_model`), so each file is read once. Extraction failures are not fatal.
+
+**Evidence search (transaction → files).** `GET /api/disputes/transactions/{id}/evidence-search` embeds the
+transaction's facets, queries Chroma for the nearest records to each facet (cosine distance), groups them by
+document, and keeps the top `limit` (default 5). Each candidate is then read by gemma3 (cached) and fully matched,
+and the list is re-ranked by match score. This is the retrieve-then-verify pattern meant for large document stores
+(for example Google Drive, later): Chroma search is cheap across thousands of files, and the language model only
+reads the shortlist. The sample library is indexed on first search and stands in for that store.
 
 A scanned PDF has no text layer and is not rasterised; the matrix runs against a placeholder, the score is near
 zero, and `note` suggests uploading it as a JPEG instead.
@@ -571,7 +592,7 @@ Implemented in `services/letter.py`, routed to `POST /api/generate`.
 | User prompt | Addressee (`{network} Dispute Resolution, Chargeback Arbitration Unit`), every transaction field, match score and field-check results, strongest purpose excerpt, top 3 excerpts, fixed signature block. |
 | Options | `temperature 0.25`, `num_ctx 8192`, `stream false`. |
 | Post-processing | Regexes strip opening filler ("Sure,", "Here is the…:"), trailing filler ("Let me know…"), and `* # \`` characters and bullet markers. |
-| Model chain | `OLLAMA_TEXT_MODEL` → each of `OLLAMA_TEXT_MODEL_FALLBACKS`; a 404 (model not installed) moves to the next. |
+| Model | `OLLAMA_LLM_MODEL` (`gemma3:4b`), the same model that reads evidence fields. |
 | Offline fallback | `template_letter()`: a deterministic five-paragraph letter from the same facts. Flagged in the stage detail, the UI ("Template letter" tag) and the PDF. |
 
 ## 10. Chargeback package layout
@@ -598,6 +619,7 @@ Interactive docs: http://localhost:8000/docs
 | GET | `/api/health` | Ollama reachability, resolved models, config, Chroma record/document counts | JSON |
 | GET | `/api/modules` | Module registry with lock state and messages | JSON |
 | GET | `/api/disputes/transactions` | All dispute transactions and the sample transaction id | JSON |
+| GET | `/api/disputes/transactions/{id}/evidence-search?limit=5` | Chroma shortlist of stored files for the transaction, each read by gemma3 and matched | JSON; 503 if Ollama/model unavailable |
 | GET | `/api/disputes/transactions/{id}` | One transaction | JSON / 404 |
 | GET | `/api/disputes/samples` | Sample library metadata and default sample id | JSON |
 | GET | `/api/disputes/samples/scores?transaction_id=…` | EmbeddingGemma 2 match of one transaction against every sample (no letter or PDF) | JSON; 503 if Ollama/model unavailable |
@@ -619,8 +641,7 @@ All settings are environment variables, read in `config.py` and passed through `
 | Variable | Default | Used by |
 | --- | --- | --- |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | All Ollama calls |
-| `OLLAMA_TEXT_MODEL` | `gemma2:2b` | Letter generation |
-| `OLLAMA_TEXT_MODEL_FALLBACKS` | `gemma2:9b,gemma2` | Letter generation |
+| `OLLAMA_LLM_MODEL` | `gemma3:4b` | Field extraction (PDF text and photos) and letter generation |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` | Matching, text and image (only model used; no fallback) |
 | `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Reserved for Card Optimizer and Liquidity Guard |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | All Ollama calls |
@@ -637,9 +658,9 @@ All settings are environment variables, read in `config.py` and passed through `
 | Ollama unreachable | Match evidence and sample scoring return 503: "Ollama is unreachable at …" | Header badge red, error banner |
 | EmbeddingGemma 2 not installed (404) | Match returns 503: "Run: ollama pull embeddinggemma-2". No substitute embedder. | Header badge amber, error banner |
 | Evidence matches no transaction | Every transaction scores WEAK; `matched_transaction_id` is null; building returns 409 | Red "doesn't match any disputed transaction" banner, build button disabled |
-| gemma2 not installed (404) | Next tag in `OLLAMA_TEXT_MODEL_FALLBACKS`, then the template letter | Letter stage shows the model used; "Template letter" tag; PDF footer and note |
-| `ALLOW_OFFLINE_FALLBACK=false` and no gemma2 | Letter stage fails; the case goes to `failed` | Red stage, error banner |
-| JPEG evidence | Embedded as an image; field checks N/A; `note` explains | Amber note in the match panel |
+| gemma3 not installed (404) | Matching continues without field reading (PDFs: text checks; photos: embedding only); letters use the template | `extraction_error` in the match result; "Template letter" tag; PDF footer and note |
+| `ALLOW_OFFLINE_FALLBACK=false` and no gemma3 | Letter stage fails; the case goes to `failed` | Red stage, error banner |
+| JPEG evidence | Embedded as an image; field checks use gemma3's reading of the photo; `note` explains | Amber note in the match panel |
 | Model tag can't embed images, or Ollama rejects the image request | Match returns 503 with Ollama's error text | Error banner |
 | Ollama ignores the image (returns the empty-text vector) | Match returns 503: "Ollama did not read the image…" | Error banner |
 | Scanned PDF (no text layer) | Score near zero; `note` suggests uploading as JPEG; still attached as Exhibit A | Amber note in the match panel |
@@ -675,16 +696,17 @@ Limitations
 
 - Cases and packages are in memory (only embeddings persist); one backend process; no auth (local demo).
 - Chroma is embedded, so only one backend process should write to `CHROMA_DIR` at a time.
-- Not yet run against real gemma2 / EmbeddingGemma 2 or in Docker; development used a stand-in Ollama server.
+- Not yet run against real gemma3 / EmbeddingGemma 2 or in Docker; development used a stand-in Ollama server.
 - The 0.6 / 0.4 weights, rescale ranges and verdict thresholds are hand-tuned, not calibrated on EmbeddingGemma 2.
 - The image-embedding request format is unconfirmed against Ollama's documentation.
 - Chunking is line-based; complex invoice layouts may split related fields across chunks.
-- No OCR by design: JPEGs are matched as images; scanned PDFs are not rasterised.
+- No OCR engine: photos are embedded as images and read by gemma3; scanned PDFs are not rasterised.
+- gemma3:4b can misread a photo; photo values can't be cross-checked against a text layer.
 - Headless browsers don't render PDFs in iframes; desktop Chrome, Safari and Firefox do.
 
 Suggested review points
 
-1. The Ollama defaults (`config.py`, `.env.example`): EmbeddingGemma 2 only for matching, gemma2 tags for letters.
+1. The Ollama defaults (`config.py`, `.env.example`): EmbeddingGemma 2 for search and similarity, gemma3:4b for field reading and letters.
 2. The system prompt tone and hard rules (`letter.py`, `SYSTEM_PROMPT`).
 3. Scoring weights and thresholds (`matching.py`).
 4. Mock data realism (`data/transactions/`) and the sample documents (`services/samples.py`, `pdf_builder.py`).

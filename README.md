@@ -19,9 +19,10 @@ For the full blueprint (diagrams, data schemas, request flow, algorithms, API an
 
 ```mermaid
 flowchart LR
-    A["Upload PDF / JPEG<br/>or load a sample"] --> B["Match evidence<br/>EmbeddingGemma 2 + Chroma<br/>scored against every<br/>disputed transaction"]
+    A["Upload PDF / JPEG<br/>or load a sample"] --> B["Match evidence<br/>EmbeddingGemma 2 + Chroma<br/>gemma3 reads the fields<br/>scored against every<br/>disputed transaction"]
+    S["Find evidence for a<br/>transaction"] -->|"Chroma search,<br/>gemma3 verifies top hits"| B
     B -->|"no match"| X["Shown as not matching<br/>any transaction"]
-    B -->|"match"| D["Build evidence package<br/>gemma2 letter<br/>ReportLab PDF + Exhibit A"]
+    B -->|"match"| D["Build evidence package<br/>gemma3 letter<br/>ReportLab PDF + Exhibit A"]
     D --> F["Review the letter<br/>and package PDF"]
     F -->|"keep"| G["Download"]
     F -->|"discard"| B
@@ -34,8 +35,10 @@ and PDF for one matched transaction, which you review before deciding to downloa
 1. **Evidence in.** Drop a PDF, click **Use Sample PDF** to load a pre-built invoice from EUROSITES ADVERTISING
    LTD (USD 18,450.00, 12/09/2026) that backs transaction `txn_9f3a71c2`, or load any document from the
    **sample evidence library** (see below).
-2. **Read.** A PDF's text layer is read with pypdf and split into chunks. A JPEG is not converted to text at all:
-   there is no OCR, because EmbeddingGemma 2 embeds the image itself.
+2. **Read.** A PDF's text layer is read with pypdf and split into chunks. **gemma3:4b** (vision-capable) reads the
+   merchant, total amount, date, reference and a one-line description, from the PDF text or straight from a photo.
+   For PDFs a value only counts if it also appears in the pypdf text, so the model can't invent a number. The
+   reading is cached in Chroma, so each file is read once.
 3. **Embed and store.** Each PDF chunk, or the JPEG image itself, is embedded with **EmbeddingGemma 2**
    (`embeddinggemma-2`). The model keeps nothing, so the vectors are saved in **Chroma**, an embedded vector
    store kept on a Docker volume. Files are keyed by the SHA-256 of their bytes: uploading the same file again,
@@ -43,10 +46,11 @@ and PDF for one matched transaction, which you review before deciding to downloa
 4. **Match (step 1).** The file is scored against every disputed transaction, ranked, and flagged as backing one
    of them or none. Each transaction is turned into five facets (merchant, amount, date, reference, purpose), which are
    embedded as queries on every match. A facets × chunks cosine-similarity matrix against the stored vectors gives
-   a semantic score. For a JPEG, each facet is compared with the stored image vector. For PDFs the semantic score is
-   blended 60/40 with exact checks on amount, date, merchant and invoice reference, giving a score and a verdict
-   (STRONG, PARTIAL or WEAK).
-5. **Letter (step 2).** For the selected transaction (only PARTIAL or STRONG matches can be built), `gemma2` writes a formal, aggressive chargeback letter to the card network, acting as a Senior
+   a semantic score. For a photo, each facet is compared with the stored image vector relative to the rest of the
+   queue. The semantic score is blended 60/40 with exact checks on amount (the document's total), date, merchant and
+   invoice reference, giving a score and a verdict (STRONG, PARTIAL or WEAK). Evidence whose total doesn't match the
+   transaction amount is never a match.
+5. **Letter (step 2).** For the selected transaction (only PARTIAL or STRONG matches can be built), `gemma3:4b` writes a formal, aggressive chargeback letter to the card network, acting as a Senior
    Corporate Treasury Compliance Officer, with no chat filler.
 6. **Package.** ReportLab stitches the transaction summary, match evidence, letter and ranked excerpts into one
    PDF, with the original evidence appended as Exhibit A.
@@ -86,7 +90,7 @@ Everything runs on your machine. The app runs in Docker; Ollama runs natively on
 | --- | --- | --- |
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose v2) | Compose v2 | `docker compose version` |
 | [Ollama](https://ollama.com/download) | recent enough to list `embeddinggemma-2` | `ollama --version` |
-| Disk space for models | ~3 GB (gemma2:2b ≈ 1.6 GB, embeddinggemma-2 ≈ 1.3 GB) | |
+| Disk space for models | ~5 GB (gemma3:4b ≈ 3.3 GB, embeddinggemma-2 ≈ 1.3 GB) | |
 
 ### 2. Start Ollama and pull the models
 
@@ -95,8 +99,8 @@ Everything runs on your machine. The app runs in Docker; Ollama runs natively on
 ollama serve
 
 # In another terminal:
-ollama pull gemma2:2b          # letter generation (gemma2:9b writes better letters but is slower)
-ollama pull embeddinggemma-2   # EmbeddingGemma 2: text + image embeddings for matching
+ollama pull gemma3:4b          # reads fields from PDFs and photos, writes the letter
+ollama pull embeddinggemma-2   # EmbeddingGemma 2: text + image embeddings for search and matching
 
 # Confirm both models are installed and the API answers:
 curl http://localhost:11434/api/tags
@@ -131,7 +135,7 @@ docker compose up --build
 ### 5. Verify the Ollama connection
 
 - The badge at the top right of the dashboard turns **green** and shows both model names.
-- Or check the API: `curl http://localhost:8000/api/health` should show `"reachable": true` with `text_model` and
+- Or check the API: `curl http://localhost:8000/api/health` should show `"reachable": true` with `llm_model` and
   `embed_model` filled in.
 - In the sample library, click **Score all vs selected transaction**: the matching document should score highest.
 
@@ -145,13 +149,13 @@ docker compose up --build
 | `ollama pull` says "requires a newer version of Ollama" | Update Ollama (download the latest from ollama.com, or `brew upgrade ollama`), restart it, then pull again |
 | Case fails: "Embedding model 'embeddinggemma-2' is not installed" | `ollama pull embeddinggemma-2` |
 | JPEG case fails with an Ollama error | Check you're using an image-capable tag (default, `:740m` or `:440m`), and update Ollama. |
-| Package says "Template letter" | gemma2 isn't installed: `ollama pull gemma2:2b`. Set `ALLOW_OFFLINE_FALLBACK=false` to fail instead of using the template. |
-| Letters are slow or time out | Use `gemma2:2b` rather than `9b`, or raise `OLLAMA_TIMEOUT_SECONDS` in `.env`. |
+| Package says "Template letter", or the match panel shows no "read" values | gemma3 isn't installed: `ollama pull gemma3:4b`. Set `ALLOW_OFFLINE_FALLBACK=false` to fail instead of using the template letter. |
+| Matching or letters are slow or time out | The first read of each file takes a few seconds on gemma3:4b; later matches use the cache. Raise `OLLAMA_TIMEOUT_SECONDS` in `.env` on slower machines. |
 | Port 3000 or 8000 already in use | Change the left side of the `ports` mappings in `docker-compose.yml`. |
 
 Matching requires EmbeddingGemma 2: if Ollama or the model is unavailable, the case fails with a clear error rather
-than substituting another matcher. If only gemma2 is missing, the package is still built with a clearly labelled
-template letter.
+than substituting another matcher. If only gemma3 is missing, PDFs still match on exact text checks, photos fall
+back to the embedding alone, and the package is built with a clearly labelled template letter.
 
 ### Two-minute demo
 
@@ -163,8 +167,12 @@ template letter.
 4. Click **Use Sample PDF**, then **Match evidence**. The EUROSITES transaction ranks first and is selected.
 5. Click **Build evidence package**. Read the letter in the preview, switch to **Package PDF**, then click
    **Download Legal Chargeback Package (PDF)** or **Discard**.
-6. Load another document (for example the Datadog invoice or the Northwind photo) and match again.
-7. Click the Card Optimizer and Liquidity Guard tabs to see the lock walls.
+6. Load another document (for example the Datadog invoice or the Northwind photo) and match again. For the photo,
+   the match panel shows the amount and date gemma3 read from the image.
+7. Select **SQ \*NORTHWIND EVENTS** in the queue and click **Search** under **Find evidence for this transaction**:
+   Chroma shortlists stored files, gemma3 verifies them, and the receipt and its photo rank first. Click **Use** to
+   load one.
+8. Click the Card Optimizer and Liquidity Guard tabs to see the lock walls.
 
 ## Configuration
 
@@ -173,10 +181,10 @@ Copy `.env.example` to `.env` to override anything. The main settings:
 | Variable | Default |
 | --- | --- |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` |
-| `OLLAMA_TEXT_MODEL` / `_FALLBACKS` | `gemma2:2b` / `gemma2:9b,gemma2` |
+| `OLLAMA_LLM_MODEL` | `gemma3:4b` (vision-capable: reads evidence fields and writes the letter) |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` (the only model used for matching; keep an image-capable tag: latest/`:740m` or `:440m`) |
 | `OLLAMA_NIMBLE_PATH` | `/v1/systemone` (reserved for Card Optimizer and Liquidity Guard) |
-| `ALLOW_OFFLINE_FALLBACK` | `true` (letter only: template letter if gemma2 is missing) |
+| `ALLOW_OFFLINE_FALLBACK` | `true` (letter only: template letter if gemma3 is missing) |
 | `CHROMA_DIR` | `/data/chroma` in Docker (named volume `chroma-data`); `/tmp/payment_intelligence/chroma` without Docker |
 
 The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configuration).
@@ -213,6 +221,7 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/disputes/transactions` | Mock transactions |
+| GET | `/api/disputes/transactions/{id}/evidence-search` | Find stored files for a transaction (Chroma shortlist, gemma3 verify) |
 | GET | `/api/disputes/samples` | Sample evidence library |
 | GET | `/api/disputes/samples/{id}` | Sample PDF or JPEG (`?download=true` to download) |
 | GET | `/api/disputes/samples/scores?transaction_id=…` | Match one transaction against every sample |
@@ -244,12 +253,14 @@ npm run dev
 
 - Dispute cases and generated PDFs live in memory and are cleared when the backend restarts; only evidence
   embeddings persist (in Chroma). There is no case database yet; the schemas are documented in [docs/ARCHITECTURE.md § 7](docs/ARCHITECTURE.md#7-data-model-and-schemas).
-- Not yet run against the real gemma2 and EmbeddingGemma 2 models or inside Docker. Development tests used a
+- Not yet run against the real gemma3 and EmbeddingGemma 2 models or inside Docker. Development tests used a
   stand-in Ollama server, so real scores will differ.
 - Image embedding uses `/api/embed` with `{"text": "", "image": <base64 JPEG>}` items. Ollama's model page doesn't
   document the image request format, so this needs confirming against a real Ollama install.
-- Scoring weights, image score range and thresholds are hand-tuned and should be re-checked on real output.
-- No OCR: a scanned PDF has no text layer, so upload it as a JPEG to have it matched as an image.
+- Scoring weights, the image margin (`IMAGE_MARGIN`) and thresholds are hand-tuned; re-check them on real output
+  with `scripts/check_image_embeddings.py`.
+- No OCR engine: a scanned PDF has no text layer and isn't rasterised, so upload it as a JPEG to have gemma3 read
+  it as a photo.
 - No authentication; this is a local demo.
 - Stored vectors are tagged with the embedding model name and re-embedded if `OLLAMA_EMBED_MODEL` changes. To
   wipe them, run `docker compose down -v` (removes the `chroma-data` volume).

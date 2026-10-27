@@ -14,6 +14,9 @@ export const api = {
   samples: () => fetch(`${BASE}/api/disputes/samples`).then(json),
   sampleScores: (transactionId) =>
     fetch(`${BASE}/api/disputes/samples/scores?transaction_id=${encodeURIComponent(transactionId)}`).then(json),
+  searchEvidence: (transactionId, limit = 5) =>
+    fetch(`${BASE}/api/disputes/transactions/${encodeURIComponent(transactionId)}/evidence-search?limit=${limit}`).then(json),
+  evidence: (evidenceId) => fetch(`${BASE}/api/disputes/evidence/${evidenceId}`).then(json),
   sampleUrl: (id, download = false) => `${BASE}/api/disputes/samples/${id}${download ? "?download=true" : ""}`,
   async sampleFile(sample) {
     const res = await fetch(`${BASE}/api/disputes/samples/${sample.id}`);

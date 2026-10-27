@@ -3,6 +3,7 @@ import { api } from "../api.js";
 import Dropzone from "../components/Dropzone.jsx";
 import MatchPanel from "../components/MatchPanel.jsx";
 import MatchResults from "../components/MatchResults.jsx";
+import EvidenceSearch from "../components/EvidenceSearch.jsx";
 import PipelineStages from "../components/PipelineStages.jsx";
 import SampleLibrary from "../components/SampleLibrary.jsx";
 import { DownloadIcon, FileIcon, SparkIcon, Spinner } from "../components/Icons.jsx";
@@ -126,6 +127,8 @@ export default function AutoDisputeConcierge() {
   const [file, setFile] = useState(null);
   const [evidence, setEvidence] = useState(null);
   const [matching, setMatching] = useState(false);
+  const [search, setSearch] = useState(null);
+  const [searching, setSearching] = useState(false);
   const [caseState, setCaseState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState("letter");
@@ -150,7 +153,7 @@ export default function AutoDisputeConcierge() {
 
   const txn = transactions.find((t) => t.id === selectedId);
   const building = busy || caseState?.status === "processing";
-  const running = building || matching;
+  const running = building || matching || searching;
   const match = evidence?.matches?.[selectedId];
   const buildable = match && match.verdict !== "WEAK_MATCH";
 
@@ -209,18 +212,50 @@ export default function AutoDisputeConcierge() {
   };
 
   // Step 1: score the file against every disputed transaction.
-  const matchFile = async () => {
-    if (!file) return;
+  const matchFile = async (f = file) => {
+    if (!f) return;
     resetCase();
     setMatching(true);
     try {
-      const ev = await api.matchEvidence(file);
+      const ev = await api.matchEvidence(f);
       setEvidence(ev);
       if (ev.matched_transaction_id) setSelectedId(ev.matched_transaction_id);
     } catch (e) {
       setError(e.message);
     } finally {
       setMatching(false);
+    }
+  };
+
+  // Reverse search: transaction -> best stored files.
+  const runSearch = async () => {
+    if (!txn) return;
+    setSearching(true);
+    setError(null);
+    try {
+      setSearch(await api.searchEvidence(txn.id));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const useResult = async (r) => {
+    try {
+      setError(null);
+      if (r.sample_id) {
+        const f = await api.sampleFile(samples.find((s) => s.id === r.sample_id));
+        chooseFile(f);
+        await matchFile(f);
+      } else {
+        resetCase();
+        const ev = await api.evidence(r.doc_id);
+        setEvidence(ev);
+        if (ev.matched_transaction_id) setSelectedId(ev.matched_transaction_id);
+      }
+    } catch (e) {
+      setError(e.message);
     }
   };
 
@@ -289,7 +324,7 @@ export default function AutoDisputeConcierge() {
           <div className="card">
             <div className="card-header">
               <span className="label">1 · Evidence</span>
-              <span className="text-[11px] text-slate-500">PDF text and JPEG images matched with EmbeddingGemma 2</span>
+              <span className="text-[11px] text-slate-500">Matched with EmbeddingGemma 2, fields read by gemma3</span>
             </div>
             <div className="space-y-3 p-4">
               <Dropzone file={file} onFile={chooseFile} disabled={running} />
@@ -297,7 +332,7 @@ export default function AutoDisputeConcierge() {
                 <button className="btn-secondary" onClick={useSample} disabled={running || !samples.length}>
                   <FileIcon className="h-4 w-4" /> Use Sample PDF
                 </button>
-                <button className="btn-primary flex-1" onClick={matchFile} disabled={!file || running}>
+                <button className="btn-primary flex-1" onClick={() => matchFile()} disabled={!file || running}>
                   {matching ? <Spinner /> : <SparkIcon />}
                   {matching ? "Matching against dispute queue…" : evidence ? "Match again" : "Match evidence"}
                 </button>
@@ -339,6 +374,14 @@ export default function AutoDisputeConcierge() {
 
           <TransactionQueue transactions={transactions} selectedId={selectedId} onSelect={selectTxn} disabled={running} />
           {txn && <TransactionDetail txn={txn} />}
+          <EvidenceSearch
+            txn={txn}
+            search={search}
+            searching={searching}
+            onSearch={runSearch}
+            onUse={useResult}
+            disabled={running}
+          />
 
           <SampleLibrary
             samples={samples}
@@ -413,7 +456,11 @@ export default function AutoDisputeConcierge() {
               {running && (
                 <div className="absolute inset-x-0 top-0 flex items-center gap-2 bg-amber-50/95 px-4 py-2 text-xs font-medium text-amber-800">
                   <Spinner className="h-3.5 w-3.5" />
-                  {matching ? "Matching evidence with EmbeddingGemma 2…" : "Writing the letter and building the package…"}
+                  {searching
+                    ? "Searching stored files and reading the shortlist…"
+                    : matching
+                      ? "Embedding and reading the evidence…"
+                      : "Writing the letter and building the package…"}
                 </div>
               )}
             </div>

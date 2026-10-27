@@ -30,7 +30,7 @@ export default function MatchPanel({ match }) {
             <span className="truncate font-mono text-[11px] text-slate-500">{match.embedding_model}</span>
           </div>
           {[
-            [`${match.mode === "image" ? "Image" : "Semantic"} (cosine) × ${match.semantic_weight}`, match.semantic_score],
+            [`${match.mode === "image" ? "Image vs queue" : "Semantic"} (cosine) × ${match.semantic_weight}`, match.semantic_score],
             ...(match.field_weight ? [[`Field corroboration × ${match.field_weight}`, match.field_score]] : []),
           ].map(([label, v]) => (
             <div key={label} className="flex items-center gap-2 text-[11px] text-slate-600">
@@ -44,12 +44,25 @@ export default function MatchPanel({ match }) {
         </div>
       </div>
 
+      {match.extracted && (
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+          <span className="font-semibold text-slate-700">{match.extracted.model}</span> read this{" "}
+          {match.extracted.source === "image" ? "photo" : "PDF"}: {match.extracted.description || "no description"}
+          {match.extracted.source !== "image" && " Exact text checks decide for PDFs."}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-1.5">
         {match.field_checks.map((c) => (
           <div key={c.field} className="flex items-center justify-between rounded border border-slate-200 px-2 py-1.5">
             <div className="min-w-0">
               <div className="text-[11px] font-medium text-slate-500">{c.field}</div>
               <div className="truncate font-mono text-xs text-slate-800">{c.expected}</div>
+              {c.read !== undefined && (
+                <div className="truncate font-mono text-[10px] text-slate-400" title="Read from the evidence by the language model">
+                  read: {c.read ?? "—"}
+                </div>
+              )}
             </div>
             {c.applicable === false ? (
               <span className="tag tag-slate">N/A</span>
