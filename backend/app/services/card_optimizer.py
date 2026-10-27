@@ -15,24 +15,32 @@ from app.data.transactions.cross_border import CARD_PORTFOLIO
 from app.services.corridor import MIN_SAVING_USD, NO_CHANGE, REASON_CODES, savings
 from app.services.ollama_client import OllamaUnavailable, decide, structured_chat
 
+# A decision model classifies; it doesn't do arithmetic. So the state carries the facts already worked out by
+# corridor.py (which card works, what it saves, whether it removes the FX fee), and each option says exactly which
+# facts it applies to.
 REASON_CRITERIA = {
-    "SCA_BYPASS_CORRIDOR": "The payment hit a 3-D Secure / SCA challenge; route it through a card with the secure "
-                           "corporate payment exemption in the merchant's region so no challenge is raised.",
-    "FX_INTERBANK_MATCH": "The payment pays an FX markup; route it through a card that holds the payment currency "
-                          "so it settles with no FX fee.",
-    "INTER-REGIONAL_ROUTING": "The payment is blocked or charged a cross-border fee because issuer and merchant are "
-                              "in different regions; route it through a card issued in the merchant's region.",
-    NO_CHANGE: "No card is meaningfully better (saves less than 10 USD) or none can clear the friction.",
+    "SCA_BYPASS_CORRIDOR": "sca_challenge is true: the payment was declined or held for 3-D Secure / SCA "
+                           "authentication (code 1A or 65, or a 3DS challenge pending). Retry on a card with the "
+                           "corporate SCA exemption in the merchant's region.",
+    "INTER-REGIONAL_ROUTING": "regional_block is true (declined for a cross-region block, such as code 05), or there "
+                              "is no SCA challenge, saving_meets_threshold is true and best_card_removes_fx_fee is "
+                              "false: the saving comes from avoiding the cross-border fee with a card issued in the "
+                              "merchant's region.",
+    "FX_INTERBANK_MATCH": "No SCA challenge and no regional block, saving_meets_threshold is true and "
+                          "best_card_removes_fx_fee is true: the best card holds the payment currency, so the FX "
+                          "markup disappears.",
+    NO_CHANGE: "No SCA challenge and no regional block, and saving_meets_threshold is false (or there is no "
+               "working card). Never for a declined or pending payment that has a working card.",
 }
 
-REASON_QUESTION = "Which routing action fixes this payment's friction at the lowest cost?"
-CARD_QUESTION = ("Which company card should this payment be routed through? Only pick a card that can clear the "
-                 "friction. If no card is better, pick the current card.")
+REASON_QUESTION = "Which reason code matches these facts?"
+CARD_QUESTION = ("Which company card should this payment be routed through? Pick the card marked best working "
+                 "card. If there is none, pick the current card.")
 
 SYSTEM_PROMPT = ("You are a corporate treasury payments engineer optimising card routing for cross-border payments. "
                  "Choose one reason code and one card.\n\nReason codes:\n"
                  + "\n".join(f"- {k}: {v}" for k, v in REASON_CRITERIA.items())
-                 + "\n\nOnly recommend a card marked eligible. Never invent fees or cards.")
+                 + "\n\nOnly recommend a card that can work. Never invent fees or cards.")
 
 SCHEMA = {
     "type": "object",
@@ -52,32 +60,56 @@ ACTIONS = {
 }
 
 
+def _best(analysis: dict) -> dict | None:
+    """Cheapest card that can clear the friction (the same pick the rule engine makes)."""
+    working = sorted((o for o in analysis["options"] if o["eligible"]), key=lambda o: (o["fee_usd"], o["current"]))
+    return working[0] if working else None
+
+
 def _state(analysis: dict) -> dict:
-    t, c = analysis["transaction"], analysis["corridor"]
-    payment = {k: t.get(k) for k in ("merchant", "mcc", "amount", "currency", "amount_usd", "status",
-                                     "decline_code", "decline_text", "memo")}
-    return {"payment": payment,
-            "corridor": f"{c['issuer_country']} ({c['issuer_region']}) -> {c['merchant_country']} "
-                        f"({c['merchant_region']}), inter-regional: {c['inter_regional']}",
-            "friction": analysis["signals"], "current_fee_usd": analysis["current_fee_usd"]}
+    t, c, sig = analysis["transaction"], analysis["corridor"], analysis["signals"]
+    current = next(o for o in analysis["options"] if o["current"])
+    best = _best(analysis)
+    saving = round(current["fee_usd"] - best["fee_usd"], 2) if best else 0.0
+    payment = {k: t.get(k) for k in ("merchant", "amount", "currency", "status", "decline_code", "decline_text")}
+    return {
+        "payment": payment,
+        "corridor": f"{c['issuer_country']} ({c['issuer_region']}) -> {c['merchant_country']} ({c['merchant_region']})",
+        "facts": {
+            "sca_challenge": sig["sca_challenge"],
+            "regional_block": sig["regional_block"],
+            "payment_failed": sig["failed"],
+            "current_card": current["name"],
+            "current_card_can_work": current["eligible"],
+            "current_fee_usd": current["fee_usd"],
+            "best_working_card": best["name"] if best else None,
+            "best_card_fee_usd": best["fee_usd"] if best else None,
+            "saving_usd": saving,
+            "saving_meets_threshold": bool(best) and saving >= MIN_SAVING_USD,
+            "best_card_removes_fx_fee": bool(best) and best["fx_bps"] == 0 and current["fx_bps"] > 0,
+            "best_card_in_merchant_region": bool(best) and best["region"] == c["merchant_region"],
+        },
+    }
 
 
-def _card_line(o: dict) -> str:
-    status = "eligible" if o["eligible"] else "cannot clear the friction: " + "; ".join(o["issues"])
-    return (f"{o['name']}{' (current card)' if o['current'] else ''}, issued in {o['issuer_country']} ({o['region']}), "
-            f"fee {o['fee_usd']:.2f} USD ({o['total_bps']} bps), {status}")
+def _card_line(o: dict, best: dict | None) -> str:
+    status = "can work" if o["eligible"] else "can't work: " + "; ".join(o["issues"])
+    tags = "".join(t for t, on in ((" (current card)", o["current"]),
+                                    (" (best working card)", best is not None and o["card_id"] == best["card_id"])) if on)
+    return (f"{o['name']}{tags}, issued in {o['issuer_country']} ({o['region']}), "
+            f"fee {o['fee_usd']:.2f} USD, {status}")
 
 
 def _questions(analysis: dict) -> dict:
     return {
         "reason_code": {"type": "choice", "instructions": REASON_QUESTION, "criteria": REASON_CRITERIA},
         "card": {"type": "choice", "instructions": CARD_QUESTION,
-                 "criteria": {o["card_id"]: _card_line(o) for o in analysis["options"]}},
+                 "criteria": {o["card_id"]: _card_line(o, _best(analysis)) for o in analysis["options"]}},
     }
 
 
 def _prompt(analysis: dict) -> str:
-    cards = "\n".join(f"- {o['card_id']}: {_card_line(o)}" for o in analysis["options"])
+    cards = "\n".join(f"- {o['card_id']}: {_card_line(o, _best(analysis))}" for o in analysis["options"])
     return f"Payment:\n{json.dumps(_state(analysis), indent=1)}\n\nCards:\n{cards}"
 
 
@@ -124,10 +156,21 @@ async def recommend(analysis: dict) -> dict:
             out = {"reason_code": rule["reason_code"], "recommended_card_id": rule["card_id"], "confidence": None}
             source, model, route = "rules (models unavailable)", "rules", None
 
+    raw = {"reason_code": out.get("reason_code"), "card_id": out.get("recommended_card_id")}
+    agrees = raw["reason_code"] == rule["reason_code"] and (rule["reason_code"] == NO_CHANGE
+                                                             or raw["card_id"] == rule["card_id"])
     warnings = []
     if out.get("reason_code") not in (*REASON_CODES, NO_CHANGE):
         warnings.append(f"model returned an unknown reason code {out.get('reason_code')!r}; showing the rule's")
         out = {**out, "reason_code": rule["reason_code"]}
+    if out["reason_code"] == NO_CHANGE and rule["reason_code"] != NO_CHANGE:
+        # NO_CHANGE contradicts the facts (a working card fixes a failed payment or saves above the threshold), so
+        # it's a misread, not a judgement call: show the rule engine's answer and say so.
+        facts = _state(analysis)["facts"]
+        why = ("the payment failed and " + facts["best_working_card"] + " can clear it" if facts["payment_failed"]
+               else f"{facts['best_working_card']} saves {facts['saving_usd']:.2f} USD")
+        warnings.append(f"{model} chose NO_CHANGE, but {why}; showing the rule engine's answer")
+        out = {**out, "reason_code": rule["reason_code"], "recommended_card_id": rule["card_id"]}
     option = next((o for o in analysis["options"] if o["card_id"] == out.get("recommended_card_id")), None)
     if out["reason_code"] != NO_CHANGE and (option is None or not option["eligible"]):
         warnings.append("model picked a card that can't clear this friction; showing the rule engine's card")
@@ -147,8 +190,8 @@ async def recommend(analysis: dict) -> dict:
         "card_probabilities": out.get("card_probabilities") or {},
         "source": source, "model": model, "route": route, "notes": notes,
         "rule": rule,
-        "agrees_with_rules": out["reason_code"] == rule["reason_code"]
-        and (rule["reason_code"] == NO_CHANGE or out.get("recommended_card_id") == rule["card_id"]),
+        "model_answer": raw,
+        "agrees_with_rules": agrees,
         "warnings": warnings,
         **savings(analysis, card_id),
     }

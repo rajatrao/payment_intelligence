@@ -175,7 +175,7 @@ function Recommendation({ rec }) {
         <div className={`rounded-md px-3 py-2 text-[11px] ${rec.agrees_with_rules ? "bg-slate-50 text-slate-600" : "bg-amber-50 text-amber-800"}`}>
           {rec.agrees_with_rules
             ? `Rule check agrees: ${rec.rule.reason_code}.`
-            : `Rule check disagrees: rules suggest ${rec.rule.reason_code}${rec.rule.card_id ? ` on ${rec.rule.card_id}` : ""} (${rec.rule.why}).`}
+            : `Rule check disagrees: the model chose ${rec.model_answer?.reason_code}, rules suggest ${rec.rule.reason_code}${rec.rule.card_id ? ` on ${rec.rule.card_id}` : ""} (${rec.rule.why}).`}
         </div>
         {rec.warnings.map((w) => (
           <div key={w} className="rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800">{w}</div>
