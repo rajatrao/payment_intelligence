@@ -770,7 +770,7 @@ take 2 to 26 options, and the request must fit nimble's 8,192-token context. `ol
     "current_fee_usd": 99.81
   },
   "questions": {
-    "reason_code": {"type": "choice", "instructions": "What is wrong with this payment, and which kind of fix does it need?",
+    "reason_code": {"type": "choice", "instructions": "What is the main cause of this payment's problem, judged from its status and decline reason?",
                     "criteria": {"SCA_BYPASS_CORRIDOR": "…", "FX_INTERBANK_MATCH": "…",
                                  "INTER-REGIONAL_ROUTING": "…", "NO_CHANGE": "…"}},
     "card": {"type": "choice", "instructions": "Which company card should this payment be retried or paid on? …",

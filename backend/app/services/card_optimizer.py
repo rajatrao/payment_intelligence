@@ -19,18 +19,20 @@ from app.services.ollama_client import OllamaUnavailable, decide, structured_cha
 # each card holds, its region, exemption and fees) and makes the judgement itself. Nothing tells it which card is
 # right; the rule engine's answer is only shown next to it for comparison.
 REASON_CRITERIA = {
-    "SCA_BYPASS_CORRIDOR": "The payment was declined or is held because the issuer demanded 3-D Secure / SCA "
-                           "authentication. Fix: retry on a card with the corporate SCA exemption that is issued in "
-                           "the merchant's region, so no challenge is raised.",
+    "SCA_BYPASS_CORRIDOR": "The cause is authentication: the payment was declined or is held because the issuer "
+                           "demanded 3-D Secure / SCA (for example code 1A or 65, or a pending 3DS challenge). This "
+                           "applies even when the card is also from another region. Fix: retry on a card with the "
+                           "corporate SCA exemption issued in the merchant's region, so no challenge is raised.",
     "FX_INTERBANK_MATCH": "The payment went through but paid an FX markup because the card doesn't hold the payment "
                           "currency. Fix: pay from a card that holds that currency.",
-    "INTER-REGIONAL_ROUTING": "The payment was blocked for being cross-region, or paid a cross-border fee because "
-                              "the card was issued in a different region from the merchant. Fix: use a card issued "
-                              "in the merchant's region.",
+    "INTER-REGIONAL_ROUTING": "The cause is geography, not authentication: the payment was blocked as a "
+                              "cross-region payment (for example code 05), or went through but paid a cross-border "
+                              "fee because the card is from a different region than the merchant. Not for a 3-D "
+                              "Secure / SCA decline. Fix: use a card issued in the merchant's region.",
     NO_CHANGE: "The payment went through and no other card would save a meaningful amount (about 10 USD or more).",
 }
 
-REASON_QUESTION = "What is wrong with this payment, and which kind of fix does it need?"
+REASON_QUESTION = "What is the main cause of this payment's problem, judged from its status and decline reason?"
 CARD_QUESTION = ("Which company card should this payment be retried or paid on? Choose the card that fixes the "
                  "problem at the lowest fee. A card that already failed on this payment won't work.")
 
