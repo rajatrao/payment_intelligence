@@ -30,7 +30,7 @@ export default function MatchPanel({ match }) {
             <span className="truncate font-mono text-[11px] text-slate-500">{match.embedding_model}</span>
           </div>
           {[
-            [`${match.mode === "image" ? "Image vs queue" : "Semantic"} (cosine) × ${match.semantic_weight}`, match.semantic_score],
+            [`${match.mode === "image" ? "Visual similarity" : "Semantic (cosine)"} × ${match.semantic_weight}`, match.semantic_score],
             ...(match.field_weight ? [[`Field corroboration × ${match.field_weight}`, match.field_score]] : []),
           ].map(([label, v]) => (
             <div key={label} className="flex items-center gap-2 text-[11px] text-slate-600">
@@ -73,33 +73,7 @@ export default function MatchPanel({ match }) {
         ))}
       </div>
 
-      {match.mode === "image" && match.image_lifts ? (
-        <div>
-          <div className="label mb-1">Stands out from the dispute queue by</div>
-          <p className="mb-2 text-[10px] text-slate-500">
-            Photo-to-text similarity is high for any text, so each detail is compared with the same detail across the
-            whole queue. A full bar is +{match.image_margin.toFixed(2)} above the queue median; the top 3 count.
-          </p>
-          <div className="space-y-1">
-            {match.image_lifts.map((l) => (
-              <div
-                key={l.facet}
-                className={`flex items-center gap-2 text-[11px] ${l.used ? "text-slate-700" : "text-slate-400"}`}
-                title={`similarity ${l.cosine.toFixed(3)} vs queue median ${l.queue_median.toFixed(3)}`}
-              >
-                <span className="w-20 shrink-0 capitalize">{l.facet}</span>
-                <div className="h-1.5 flex-1 rounded bg-slate-100">
-                  <div className={`h-1.5 rounded ${l.used ? tone.bar : "bg-slate-300"}`} style={{ width: `${l.scaled * 100}%` }} />
-                </div>
-                <span className="w-14 text-right font-mono tabular-nums">
-                  {l.lift >= 0 ? "+" : ""}
-                  {l.lift.toFixed(3)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
+      {match.mode !== "image" && (
         <div>
           <div className="label mb-1.5">Cosine similarity matrix · facets × document chunks</div>
           <div className="overflow-x-auto">

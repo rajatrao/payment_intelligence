@@ -263,9 +263,8 @@ def _match_image(txn: dict, facets: dict, facet_vecs: list, image_vec: list, med
         "image_baseline": [round(m, 4) for m in medians],
         "image_lifts": image_lifts,
         "image_margin": IMAGE_MARGIN,
-        "note": "Photo evidence: the semantic score is how much more the image resembles this transaction than the "
-        "rest of the dispute queue (EmbeddingGemma 2), and the field checks use the values "
-        f"{fields['model']} read from the photo." if fields else
+        "note": f"Photo evidence: {fields['model']} read the amount, date and merchant from the photo for the "
+        "checks below; EmbeddingGemma 2 adds a visual-similarity score." if fields else
         "Photo evidence matched by EmbeddingGemma 2 only: the field-extraction model was not available, so "
         "amount, date and merchant could not be checked.",
         "purpose_evidence": {"chunk_index": 0, "similarity": matrix[facet_names.index("purpose")][0],

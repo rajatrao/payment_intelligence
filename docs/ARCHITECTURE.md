@@ -556,8 +556,8 @@ use the values gemma3 read from the photo (shown as `read:` in the match panel),
 amount gate as PDFs. If gemma3 is unavailable, the image is scored on the relative semantic score alone (weight 1.0).
 Facet vectors are cached per process, so scoring against the queue costs no extra Ollama calls after the first.
 The match result carries `image_lifts` (cosine, queue median, lift, and whether it was among the top 3), and the
-match panel shows these as "Stands out from the dispute queue by" bars for photos instead of the cosine heatmap,
-since raw photo cosines look alike for every transaction.
+match panel hides the cosine heatmap for photos (raw photo cosines look alike for every transaction) and labels
+the semantic part "Visual similarity"; `image_lifts` stays in the API for tuning.
 
 Ollama embeds an image it can't read from its text alone. Image items carry empty text, so every unread image
 would come back as the same vector; `vector_store.py` compares each photo with a plain grey image (cosine > 0.995
