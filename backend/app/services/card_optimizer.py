@@ -27,12 +27,13 @@ REASON_CRITERIA = {
     "SCA_BYPASS_CORRIDOR": "The payment was declined or is held for 3-D Secure / SCA authentication (for example "
                            "code 1A or 65, or a pending 3DS challenge), and the switch moves it to a card with the "
                            "corporate SCA exemption in the merchant's region, so no challenge is raised.",
-    "FX_INTERBANK_MATCH": "The payment went through, the current card charged an FX fee above 0%, and the proposed "
-                          "card holds the payment currency, so the switch removes the FX markup and saves 10 USD or "
-                          "more (it may remove a cross-border fee too).",
+    "FX_INTERBANK_MATCH": "The payment went through and most of the switch's saving comes from the FX fee: "
+                          "fx_fee_saving_usd is larger than cross_border_fee_saving_usd, because the proposed card "
+                          "holds the payment currency. Total saving 10 USD or more.",
     "INTER-REGIONAL_ROUTING": "The payment was blocked as a cross-region payment (for example code 05), or it went "
-                              "through with a 0% FX fee and the switch only removes a cross-border fee by using a "
-                              "card from the merchant's region, saving 10 USD or more.",
+                              "through and most of the switch's saving comes from the cross-border fee: "
+                              "cross_border_fee_saving_usd is larger than fx_fee_saving_usd, because the proposed card "
+                              "is issued in the merchant's region. Total saving 10 USD or more.",
     NO_CHANGE: "The payment went through and the switch saves less than 10 USD, so it isn't worth changing cards.",
 }
 
@@ -136,7 +137,17 @@ async def _decide(analysis: dict) -> dict:
         # nimble kept the current card, which is what NO_CHANGE means; there is no switch to classify.
         return {**out, "reason_code": NO_CHANGE, "confidence": card.get("confidence"), "probabilities": {}}
     current = next(o for o in analysis["options"] if o["current"])
-    switch = {**state, "proposed_switch": {"from": _card_line(current, analysis), "to": _card_line(option, analysis)}}
+    usd = analysis["transaction"]["amount_usd"]
+    fx_saving = round(usd * (current["fx_bps"] - option["fx_bps"]) / 10_000, 2)
+    xb_saving = round(usd * (current["cross_border_bps"] - option["cross_border_bps"]) / 10_000, 2)
+    # Per-fee arithmetic only (a decision model doesn't calculate); which code it adds up to is nimble's call.
+    switch = {**state, "proposed_switch": {
+        "from": _card_line(current, analysis), "to": _card_line(option, analysis),
+        "fx_fee": f"{current['fx_bps'] / 100:.2f}% -> {option['fx_bps'] / 100:.2f}%",
+        "fx_fee_saving_usd": fx_saving,
+        "cross_border_fee": f"{current['cross_border_bps'] / 100:.2f}% -> {option['cross_border_bps'] / 100:.2f}%",
+        "cross_border_fee_saving_usd": xb_saving,
+        "total_saving_usd": round(current["fee_usd"] - option["fee_usd"], 2)}}
     reason = (await decide(switch, _reason_question()))["reason_code"]
     return {**out, "reason_code": reason.get("choice"), "confidence": reason.get("confidence"),
             "probabilities": reason.get("probabilities") or {}}

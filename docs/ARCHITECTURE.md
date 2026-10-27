@@ -733,7 +733,8 @@ flowchart LR
 5. **Decision** (`card_optimizer.recommend`). The raw payment (decline code and text, status, corridor) goes to
    Ollama's decision API as `state`, in two calls. First a `card` choice (one option per portfolio card,
    described with facts only: issuer and region, currencies held, SCA exemption, fees on this payment, and whether
-   it already failed). Then, with the chosen switch added to the state as `proposed_switch` (from and to card), a
+   it already failed). Then, with the chosen switch added to the state as `proposed_switch` (from and to card,
+   and the FX and cross-border fee saving in USD), a
    `reason_code` choice: which of the three codes, or `NO_CHANGE`, describes what the switch fixes. If nimble keeps
    the current card, the answer is `NO_CHANGE` and there is no second call. Nothing in either request says which
    answer is right; the model makes the judgement. See the request below.
