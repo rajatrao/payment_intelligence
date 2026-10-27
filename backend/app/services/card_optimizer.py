@@ -16,26 +16,27 @@ from app.services.corridor import CARDS, NO_CHANGE, REASON_CODES, savings
 from app.services.ollama_client import OllamaUnavailable, decide, structured_chat
 
 # The decision model gets the payment and the card portfolio as plain facts (decline code and text, corridor, what
-# each card holds, its region, exemption and fees) and makes the judgement itself. Nothing tells it which card is
-# right; the rule engine's answer is only shown next to it for comparison.
+# each card holds, its region, exemption and fees) and makes the judgement itself, in two steps: first it picks the
+# card, then it classifies what moving to that card fixes. Nothing tells it which answer is right; the rule
+# engine's answer is only shown next to it for comparison.
+#
+# Why two steps: asked "what's wrong with this payment?" on its own, nimble read every settled payment as fine
+# (NO_CHANGE) even when it picked a card that saved over 200 USD. Classifying a concrete switch, with that card's
+# fees in view, is the kind of question a decision model answers well.
 REASON_CRITERIA = {
-    "SCA_BYPASS_CORRIDOR": "The cause is authentication: the payment was declined or is held because the issuer "
-                           "demanded 3-D Secure / SCA (for example code 1A or 65, or a pending 3DS challenge). This "
-                           "applies even when the card is also from another region. Fix: retry on a card with the "
-                           "corporate SCA exemption issued in the merchant's region, so no challenge is raised.",
-    "FX_INTERBANK_MATCH": "The cause is currency: the payment went through, but the current card doesn't hold the "
-                          "payment currency, so it paid an FX markup. Use this whenever the current card's FX fee is "
-                          "above 0%, even if it also paid a cross-border fee. Fix: pay from a card that holds that "
-                          "currency.",
-    "INTER-REGIONAL_ROUTING": "The cause is geography, not authentication: the payment was blocked as a "
-                              "cross-region payment (for example code 05), or went through but paid a cross-border "
-                              "fee because the card is from a different region than the merchant while the current "
-                              "card's FX fee is 0% (it already holds the currency). Not for a 3-D Secure / SCA "
-                              "decline. Fix: use a card issued in the merchant's region.",
-    NO_CHANGE: "The payment went through and no other card would save a meaningful amount (about 10 USD or more).",
+    "SCA_BYPASS_CORRIDOR": "The payment was declined or is held for 3-D Secure / SCA authentication (for example "
+                           "code 1A or 65, or a pending 3DS challenge), and the switch moves it to a card with the "
+                           "corporate SCA exemption in the merchant's region, so no challenge is raised.",
+    "FX_INTERBANK_MATCH": "The payment went through, the current card charged an FX fee above 0%, and the proposed "
+                          "card holds the payment currency, so the switch removes the FX markup and saves 10 USD or "
+                          "more (it may remove a cross-border fee too).",
+    "INTER-REGIONAL_ROUTING": "The payment was blocked as a cross-region payment (for example code 05), or it went "
+                              "through with a 0% FX fee and the switch only removes a cross-border fee by using a "
+                              "card from the merchant's region, saving 10 USD or more.",
+    NO_CHANGE: "The payment went through and the switch saves less than 10 USD, so it isn't worth changing cards.",
 }
 
-REASON_QUESTION = "What is the main cause of this payment's problem, judged from its status, decline reason and the current card's fees?"
+REASON_QUESTION = "This payment is being moved to the proposed card. Which reason code describes what the switch fixes?"
 CARD_QUESTION = ("Which company card should this payment be retried or paid on? Choose the card that fixes the "
                  "problem at the lowest fee. A card that already failed on this payment won't work.")
 
@@ -91,12 +92,13 @@ def _card_line(o: dict, analysis: dict) -> str:
     return line
 
 
-def _questions(analysis: dict) -> dict:
-    return {
-        "reason_code": {"type": "choice", "instructions": REASON_QUESTION, "criteria": REASON_CRITERIA},
-        "card": {"type": "choice", "instructions": CARD_QUESTION,
-                 "criteria": {o["card_id"]: _card_line(o, analysis) for o in analysis["options"]}},
-    }
+def _card_question(analysis: dict) -> dict:
+    return {"card": {"type": "choice", "instructions": CARD_QUESTION,
+                     "criteria": {o["card_id"]: _card_line(o, analysis) for o in analysis["options"]}}}
+
+
+def _reason_question() -> dict:
+    return {"reason_code": {"type": "choice", "instructions": REASON_QUESTION, "criteria": REASON_CRITERIA}}
 
 
 def _prompt(analysis: dict) -> str:
@@ -124,11 +126,20 @@ def _explain(analysis: dict, reason_code: str, card_id: str | None) -> tuple[str
 
 
 async def _decide(analysis: dict) -> dict:
-    answers = await decide(_state(analysis), _questions(analysis))
-    reason, card = answers["reason_code"], answers["card"]
-    return {"reason_code": reason.get("choice"), "recommended_card_id": card.get("choice"),
-            "confidence": reason.get("confidence"), "probabilities": reason.get("probabilities") or {},
-            "card_probabilities": card.get("probabilities") or {}}
+    """Step 1: nimble picks the card. Step 2: nimble classifies the switch to that card."""
+    state = _state(analysis)
+    card = (await decide(state, _card_question(analysis)))["card"]
+    card_id = card.get("choice")
+    option = next((o for o in analysis["options"] if o["card_id"] == card_id), None)
+    out = {"recommended_card_id": card_id, "card_probabilities": card.get("probabilities") or {}}
+    if option is None or option["current"]:
+        # nimble kept the current card, which is what NO_CHANGE means; there is no switch to classify.
+        return {**out, "reason_code": NO_CHANGE, "confidence": card.get("confidence"), "probabilities": {}}
+    current = next(o for o in analysis["options"] if o["current"])
+    switch = {**state, "proposed_switch": {"from": _card_line(current, analysis), "to": _card_line(option, analysis)}}
+    reason = (await decide(switch, _reason_question()))["reason_code"]
+    return {**out, "reason_code": reason.get("choice"), "confidence": reason.get("confidence"),
+            "probabilities": reason.get("probabilities") or {}}
 
 
 async def recommend(analysis: dict) -> dict:

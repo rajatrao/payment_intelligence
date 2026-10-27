@@ -731,10 +731,12 @@ flowchart LR
    `NO_CHANGE`; best card removes the FX fee → `FX_INTERBANK_MATCH`; otherwise `INTER-REGIONAL_ROUTING`. No
    eligible card → `NO_CHANGE`.
 5. **Decision** (`card_optimizer.recommend`). The raw payment (decline code and text, status, corridor) goes to
-   Ollama's decision API as `state`, with two `choice` questions: `reason_code` (the three codes plus `NO_CHANGE`,
-   each describing a kind of problem and fix) and `card` (one option per portfolio card, described with facts
-   only: issuer and region, currencies held, SCA exemption, fees on this payment, and whether it already failed).
-   Nothing in the request says which answer is right; the model makes the judgement. See the request below.
+   Ollama's decision API as `state`, in two calls. First a `card` choice (one option per portfolio card,
+   described with facts only: issuer and region, currencies held, SCA exemption, fees on this payment, and whether
+   it already failed). Then, with the chosen switch added to the state as `proposed_switch` (from and to card), a
+   `reason_code` choice: which of the three codes, or `NO_CHANGE`, describes what the switch fixes. If nimble keeps
+   the current card, the answer is `NO_CHANGE` and there is no second call. Nothing in either request says which
+   answer is right; the model makes the judgement. See the request below.
 6. **Compare and price.** The model's answer is shown as given. The rule engine is a second opinion:
    `agrees_with_rules` compares code and card, and a card the rule engine thinks can't clear the friction is
    flagged. The action and rationale are written from the engine's facts, since a decision model writes no text. `fees_saved_usd` and `recovered_usd` come from `corridor.savings`, never the model:
@@ -770,7 +772,7 @@ take 2 to 26 options, and the request must fit nimble's 8,192-token context. `ol
     "current_card_fees": "3.00% FX + 1.00% cross-border = 99.81 USD"
   },
   "questions": {
-    "reason_code": {"type": "choice", "instructions": "What is the main cause of this payment's problem, judged from its status, decline reason and the current card's fees?",
+    "reason_code": {"type": "choice", "instructions": "This payment is being moved to the proposed card. Which reason code describes what the switch fixes?",
                     "criteria": {"SCA_BYPASS_CORRIDOR": "…", "FX_INTERBANK_MATCH": "…",
                                  "INTER-REGIONAL_ROUTING": "…", "NO_CHANGE": "…"}},
     "card": {"type": "choice", "instructions": "Which company card should this payment be retried or paid on? …",
@@ -780,7 +782,11 @@ take 2 to 26 options, and the request must fit nimble's 8,192-token context. `ol
 ```
 
 Fees are given in USD with the difference from the current card, so the model compares numbers rather than
-computing them. It reads `answers.reason_code.choice`, `answers.card.choice`, their `probabilities` and `confidence`. The
+computing them. The `card` and `reason_code` questions above are sent in two separate calls, the second with
+`proposed_switch` added to the state. Asked together in one call, real nimble picked the right card for all 8
+payments but classified every settled one as `NO_CHANGE`, even when its own card saved 246 USD; classifying a
+concrete switch fixed that. It reads `answers.card.choice`, `answers.reason_code.choice`, their `probabilities`
+and `confidence`. The
 reason-code probabilities are shown as bars on the recommendation.
 
 Fallbacks: if Ollama returns 404 (Ollama older than 0.35, or `nimble` not pulled), `structured_chat` asks gemma3
