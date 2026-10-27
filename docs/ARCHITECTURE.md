@@ -767,10 +767,10 @@ take 2 to 26 options, and the request must fit nimble's 8,192-token context. `ol
                 "decline_code": "1A", "decline_text": "SCA_REQUIRED / soft decline - …"},
     "corridor": "card issued in US (NA), merchant in FR (EU)",
     "current_card": "Visa Corporate ****4471",
-    "current_fee_usd": 99.81
+    "current_card_fees": "3.00% FX + 1.00% cross-border = 99.81 USD"
   },
   "questions": {
-    "reason_code": {"type": "choice", "instructions": "What is the main cause of this payment's problem, judged from its status and decline reason?",
+    "reason_code": {"type": "choice", "instructions": "What is the main cause of this payment's problem, judged from its status, decline reason and the current card's fees?",
                     "criteria": {"SCA_BYPASS_CORRIDOR": "…", "FX_INTERBANK_MATCH": "…",
                                  "INTER-REGIONAL_ROUTING": "…", "NO_CHANGE": "…"}},
     "card": {"type": "choice", "instructions": "Which company card should this payment be retried or paid on? …",

@@ -23,16 +23,19 @@ REASON_CRITERIA = {
                            "demanded 3-D Secure / SCA (for example code 1A or 65, or a pending 3DS challenge). This "
                            "applies even when the card is also from another region. Fix: retry on a card with the "
                            "corporate SCA exemption issued in the merchant's region, so no challenge is raised.",
-    "FX_INTERBANK_MATCH": "The payment went through but paid an FX markup because the card doesn't hold the payment "
-                          "currency. Fix: pay from a card that holds that currency.",
+    "FX_INTERBANK_MATCH": "The cause is currency: the payment went through, but the current card doesn't hold the "
+                          "payment currency, so it paid an FX markup. Use this whenever the current card's FX fee is "
+                          "above 0%, even if it also paid a cross-border fee. Fix: pay from a card that holds that "
+                          "currency.",
     "INTER-REGIONAL_ROUTING": "The cause is geography, not authentication: the payment was blocked as a "
                               "cross-region payment (for example code 05), or went through but paid a cross-border "
-                              "fee because the card is from a different region than the merchant. Not for a 3-D "
-                              "Secure / SCA decline. Fix: use a card issued in the merchant's region.",
+                              "fee because the card is from a different region than the merchant while the current "
+                              "card's FX fee is 0% (it already holds the currency). Not for a 3-D Secure / SCA "
+                              "decline. Fix: use a card issued in the merchant's region.",
     NO_CHANGE: "The payment went through and no other card would save a meaningful amount (about 10 USD or more).",
 }
 
-REASON_QUESTION = "What is the main cause of this payment's problem, judged from its status and decline reason?"
+REASON_QUESTION = "What is the main cause of this payment's problem, judged from its status, decline reason and the current card's fees?"
 CARD_QUESTION = ("Which company card should this payment be retried or paid on? Choose the card that fixes the "
                  "problem at the lowest fee. A card that already failed on this payment won't work.")
 
@@ -67,7 +70,9 @@ def _state(analysis: dict) -> dict:
     return {"payment": payment,
             "corridor": f"card issued in {c['issuer_country']} ({c['issuer_region']}), merchant in "
                         f"{c['merchant_country']} ({c['merchant_region']})",
-            "current_card": current["name"], "current_fee_usd": current["fee_usd"]}
+            "current_card": current["name"],
+            "current_card_fees": f"{current['fx_bps'] / 100:.2f}% FX + {current['cross_border_bps'] / 100:.2f}% "
+                                 f"cross-border = {current['fee_usd']:.2f} USD"}
 
 
 def _card_line(o: dict, analysis: dict) -> str:
