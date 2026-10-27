@@ -22,10 +22,17 @@ export const api = {
     const type = sample.kind === "jpeg" ? "image/jpeg" : "application/pdf";
     return new File([blob], sample.filename, { type });
   },
-  createDispute(transactionId, file) {
+  // Step 1: embed the file (or reuse its Chroma vectors) and score it against every disputed transaction.
+  matchEvidence(file) {
+    const form = new FormData();
+    form.append("file", file);
+    return fetch(`${BASE}/api/disputes/evidence`, { method: "POST", body: form }).then(json);
+  },
+  // Step 2: write the letter and render the package for matched evidence.
+  createDispute(transactionId, evidenceId) {
     const form = new FormData();
     form.append("transaction_id", transactionId);
-    form.append("file", file);
+    form.append("evidence_id", evidenceId);
     return fetch(`${BASE}/api/disputes/cases`, { method: "POST", body: form }).then(json);
   },
   dispute: (caseId) => fetch(`${BASE}/api/disputes/cases/${caseId}`).then(json),

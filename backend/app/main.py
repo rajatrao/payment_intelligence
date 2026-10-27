@@ -31,13 +31,17 @@ app = FastAPI(title="Payment Intelligence", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
-PIPELINE_STAGES = ["extract", "embed_match", "generate_letter", "render_pdf"]
+# Matching runs on its own (POST /api/disputes/evidence); a case only writes the letter and renders the package.
+PIPELINE_STAGES = ["generate_letter", "render_pdf"]
+MAX_EVIDENCE = 50
+BUILDABLE_VERDICTS = {"STRONG_MATCH", "PARTIAL_MATCH"}
 LOCKS = {
     "card-optimizer": "The Card Optimizer module is not available yet.",
     "liquidity-guard": "The Liquidity Guard module is not available yet.",
 }
 
-# In-memory case store; fine for a single-process local demo.
+# In-memory stores; fine for a single-process local demo. Evidence vectors live in Chroma.
+EVIDENCE: dict[str, dict] = {}
 DISPUTES: dict[str, dict] = {}
 PACKAGES: dict[str, bytes] = {}
 _TASKS: set[asyncio.Task] = set()
@@ -144,41 +148,91 @@ async def sample_invoice(download: bool = False):
     return await sample_file(DEFAULT_SAMPLE_ID, download)
 
 
-# ---------------------------------------------------------------- disputes: case pipeline
+# ---------------------------------------------------------------- disputes: match evidence
+
+async def _read_evidence(file: UploadFile | None, sample_id: str | None, use_sample: bool) -> tuple:
+    if file is not None and file.filename:
+        data = await file.read()
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "Evidence file exceeds 15 MB")
+        try:
+            kind = detect_kind(file.filename, file.content_type, data)
+        except ValueError as exc:
+            raise HTTPException(415, str(exc)) from exc
+        return data, file.filename, kind, "upload"
+    if sample_id or use_sample:
+        sample = _sample_or_404(sample_id or DEFAULT_SAMPLE_ID)
+        return sample_bytes(sample["id"]), sample["filename"], sample["kind"], "sample"
+    raise HTTPException(400, "Upload a PDF/JPEG evidence file, or pass sample_id")
+
+
+def _public_evidence(ev: dict) -> dict:
+    return {k: v for k, v in ev.items() if k not in ("data", "text")}
+
+
+@app.post("/api/disputes/evidence")
+async def match_evidence_file(file: UploadFile | None = File(None), sample_id: str | None = Form(None),
+                              use_sample: bool = Form(False)):
+    """Step 1: embed the evidence (or reuse its Chroma vectors) and match it against every disputed transaction.
+    Nothing is generated here, so files that back no transaction can be tried freely."""
+    data, filename, kind, source = await _read_evidence(file, sample_id, use_sample)
+    try:
+        text, method = await asyncio.to_thread(extract_text, kind, data)
+        doc = await vector_store.index_document(data, filename, kind, text, source)
+        matches = {t["id"]: await match_evidence(t, doc, text) for t in DISPUTE_TRANSACTIONS}
+    except OllamaUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    ranking = sorted(({"transaction_id": tid, "score": m["score"], "semantic_score": m["semantic_score"],
+                       "field_score": m["field_score"], "verdict": m["verdict"], "mode": m["mode"]}
+                      for tid, m in matches.items()), key=lambda r: r["score"], reverse=True)
+    best = ranking[0] if ranking and ranking[0]["verdict"] in BUILDABLE_VERDICTS else None
+    evidence_id = doc["doc_id"]
+    EVIDENCE.pop(evidence_id, None)
+    while len(EVIDENCE) >= MAX_EVIDENCE:
+        EVIDENCE.pop(next(iter(EVIDENCE)))
+    EVIDENCE[evidence_id] = {
+        "evidence_id": evidence_id, "filename": filename, "kind": kind, "source": source, "method": method,
+        "text_preview": text[:1500], "embedding_model": settings.embed_model,
+        "vectors": "reused from Chroma" if doc["cached"] else "embedded and stored in Chroma",
+        "matched_transaction_id": best["transaction_id"] if best else None,
+        "ranking": ranking, "matches": matches, "data": data, "text": text,
+    }
+    return _public_evidence(EVIDENCE[evidence_id])
+
+
+@app.get("/api/disputes/evidence/{evidence_id}")
+async def read_evidence(evidence_id: str):
+    ev = EVIDENCE.get(evidence_id)
+    if not ev:
+        raise HTTPException(404, "Evidence not found; match it again")
+    return _public_evidence(ev)
+
+
+# ---------------------------------------------------------------- disputes: build package
 
 def _stage(case: dict, name: str, state: str, **detail):
     case["stages"][name] = {"state": state, "at": datetime.now(timezone.utc).isoformat(), **detail}
 
 
-async def run_pipeline(case_id: str, txn: dict, filename: str, kind: str, data: bytes, source: str):
+async def run_pipeline(case_id: str, txn: dict, ev: dict):
     case = DISPUTES[case_id]
+    match = case["match"]
     try:
-        _stage(case, "extract", "running")
-        text, method = await asyncio.to_thread(extract_text, kind, data)
-        _stage(case, "extract", "done", method=method, characters=len(text))
-        case["evidence"] = {"filename": filename, "kind": kind, "method": method, "text_preview": text[:1500]}
-
-        _stage(case, "embed_match", "running")
-        doc = await vector_store.index_document(data, filename, kind, text, source)
-        match = await match_evidence(txn, doc, text)
-        _stage(case, "embed_match", "done", model=match["embedding_model"], doc_id=doc["doc_id"],
-               vectors="reused from Chroma" if doc["cached"] else "embedded and stored in Chroma")
-        case["match"] = match
-
         _stage(case, "generate_letter", "running")
         letter = await generate_letter(txn, match)
         _stage(case, "generate_letter", "done", model=letter["model"], fallback=letter["fallback"])
         case["letter"] = letter
 
         _stage(case, "render_pdf", "running")
-        evidence = {"filename": filename, "kind": kind, "method": method, "data": data}
+        evidence = {"filename": ev["filename"], "kind": ev["kind"], "method": ev["method"], "data": ev["data"]}
         PACKAGES[case_id] = await asyncio.to_thread(build_chargeback_package, case_id, txn, match, letter, evidence)
         _stage(case, "render_pdf", "done", bytes=len(PACKAGES[case_id]))
 
         case["status"] = "complete"
         case["package_url"] = f"/api/disputes/cases/{case_id}/package.pdf"
     except Exception as exc:  # noqa: BLE001 - surface any stage failure to the UI
-        log.exception("Dispute pipeline failed for %s", case_id)
+        log.exception("Package build failed for %s", case_id)
         running = next((s for s, v in case["stages"].items() if v["state"] == "running"), None)
         if running:
             _stage(case, running, "failed", error=str(exc))
@@ -187,34 +241,27 @@ async def run_pipeline(case_id: str, txn: dict, filename: str, kind: str, data: 
 
 
 @app.post("/api/disputes/cases", status_code=202)
-async def create_dispute(transaction_id: str = Form(...), file: UploadFile | None = File(None),
-                         sample_id: str | None = Form(None), use_sample: bool = Form(False)):
-    """Start the async pipeline: extract -> embed & match -> gemma2 letter -> ReportLab package."""
+async def create_dispute(transaction_id: str = Form(...), evidence_id: str = Form(...)):
+    """Step 2: build the package for matched evidence: gemma2 letter -> ReportLab PDF. The letter is returned in
+    the case for review; the PDF is only downloaded when the user asks for it."""
     txn = get_transaction(transaction_id)
     if not txn:
         raise HTTPException(404, "Transaction not found")
-
-    if file is not None and file.filename:
-        data = await file.read()
-        filename, source = file.filename, "upload"
-        if len(data) > MAX_UPLOAD_BYTES:
-            raise HTTPException(413, "Evidence file exceeds 15 MB")
-        try:
-            kind = detect_kind(filename, file.content_type, data)
-        except ValueError as exc:
-            raise HTTPException(415, str(exc)) from exc
-    elif sample_id or use_sample:
-        sample = _sample_or_404(sample_id or DEFAULT_SAMPLE_ID)
-        data, filename, kind = sample_bytes(sample["id"]), sample["filename"], sample["kind"]
-        source = "sample"
-    else:
-        raise HTTPException(400, "Upload a PDF/JPEG evidence file, or pass sample_id")
+    ev = EVIDENCE.get(evidence_id)
+    if not ev:
+        raise HTTPException(404, "Evidence not found; match it again")
+    match = ev["matches"][transaction_id]
+    if match["verdict"] not in BUILDABLE_VERDICTS:
+        raise HTTPException(409, f"{ev['filename']} does not support this transaction (score {match['score']:.2f}, "
+                                 f"{match['verdict']}); a package needs at least a partial match")
 
     case_id = f"CB-{datetime.now(timezone.utc):%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
-    DISPUTES[case_id] = {"case_id": case_id, "transaction_id": transaction_id, "status": "processing",
-                         "created_at": datetime.now(timezone.utc).isoformat(),
-                         "stages": {s: {"state": "pending"} for s in PIPELINE_STAGES}}
-    task = asyncio.create_task(run_pipeline(case_id, txn, filename, kind, data, source))
+    DISPUTES[case_id] = {"case_id": case_id, "transaction_id": transaction_id, "evidence_id": evidence_id,
+                         "status": "processing", "created_at": datetime.now(timezone.utc).isoformat(),
+                         "stages": {s: {"state": "pending"} for s in PIPELINE_STAGES},
+                         "evidence": {k: ev[k] for k in ("filename", "kind", "method", "text_preview")},
+                         "match": match}
+    task = asyncio.create_task(run_pipeline(case_id, txn, ev))
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
     return DISPUTES[case_id]

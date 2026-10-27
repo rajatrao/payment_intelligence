@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import Dropzone from "../components/Dropzone.jsx";
 import MatchPanel from "../components/MatchPanel.jsx";
+import MatchResults from "../components/MatchResults.jsx";
 import PipelineStages from "../components/PipelineStages.jsx";
 import SampleLibrary from "../components/SampleLibrary.jsx";
 import { DownloadIcon, FileIcon, SparkIcon, Spinner } from "../components/Icons.jsx";
@@ -103,6 +104,18 @@ function TransactionDetail({ txn }) {
   );
 }
 
+function LetterPreview({ caseState }) {
+  return (
+    <div className="h-full overflow-y-auto p-4 sm:p-6">
+      <article className="mx-auto max-w-2xl rounded bg-white px-8 py-10 shadow">
+        <pre className="whitespace-pre-wrap font-serif text-[13px] leading-relaxed text-slate-800">
+          {caseState.letter.text}
+        </pre>
+      </article>
+    </div>
+  );
+}
+
 export default function AutoDisputeConcierge() {
   const [transactions, setTransactions] = useState([]);
   const [sampleTxnId, setSampleTxnId] = useState(null);
@@ -111,8 +124,11 @@ export default function AutoDisputeConcierge() {
   const [scores, setScores] = useState(null);
   const [scoring, setScoring] = useState(false);
   const [file, setFile] = useState(null);
+  const [evidence, setEvidence] = useState(null);
+  const [matching, setMatching] = useState(false);
   const [caseState, setCaseState] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState("letter");
   const [error, setError] = useState(null);
   const poll = useRef(null);
 
@@ -133,9 +149,12 @@ export default function AutoDisputeConcierge() {
   }, []);
 
   const txn = transactions.find((t) => t.id === selectedId);
-  const running = busy || caseState?.status === "processing";
+  const building = busy || caseState?.status === "processing";
+  const running = building || matching;
+  const match = evidence?.matches?.[selectedId];
+  const buildable = match && match.verdict !== "WEAK_MATCH";
 
-  // Evidence preview (local object URL) until the package exists.
+  // Evidence preview (local object URL) until a package exists.
   const evidenceUrl = useMemo(() => (file && file.type === "application/pdf" ? URL.createObjectURL(file) : null), [file]);
   const imageUrl = useMemo(() => (file && file.type.startsWith("image/") ? URL.createObjectURL(file) : null), [file]);
   useEffect(() => () => evidenceUrl && URL.revokeObjectURL(evidenceUrl), [evidenceUrl]);
@@ -147,6 +166,7 @@ export default function AutoDisputeConcierge() {
     setError(null);
   };
 
+  // Match results cover every transaction, so changing the selection keeps them; only the built package resets.
   const selectTxn = (id) => {
     setSelectedId(id);
     resetCase();
@@ -154,6 +174,7 @@ export default function AutoDisputeConcierge() {
 
   const chooseFile = (f) => {
     setFile(f);
+    setEvidence(null);
     resetCase();
   };
 
@@ -187,12 +208,30 @@ export default function AutoDisputeConcierge() {
     }
   };
 
-  const run = async () => {
-    if (!txn || !file) return;
+  // Step 1: score the file against every disputed transaction.
+  const matchFile = async () => {
+    if (!file) return;
+    resetCase();
+    setMatching(true);
+    try {
+      const ev = await api.matchEvidence(file);
+      setEvidence(ev);
+      if (ev.matched_transaction_id) setSelectedId(ev.matched_transaction_id);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setMatching(false);
+    }
+  };
+
+  // Step 2: letter + package for the selected transaction.
+  const build = async () => {
+    if (!txn || !evidence || !buildable) return;
     resetCase();
     setBusy(true);
+    setView("letter");
     try {
-      const created = await api.createDispute(txn.id, file);
+      const created = await api.createDispute(txn.id, evidence.evidence_id);
       setCaseState(created);
       poll.current = setInterval(async () => {
         try {
@@ -223,7 +262,7 @@ export default function AutoDisputeConcierge() {
         <div>
           <h1 className="text-lg font-semibold">Auto-Dispute Concierge</h1>
           <p className="text-xs text-slate-500">
-            Match local evidence to a card transaction with embeddings, then generate a network-ready chargeback package.
+            Match local evidence against the dispute queue with embeddings, then build and review a chargeback package.
           </p>
         </div>
         <div className="flex gap-2">
@@ -245,14 +284,11 @@ export default function AutoDisputeConcierge() {
       )}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-        {/* Left: transaction + evidence */}
+        {/* Left: evidence, match results, transaction */}
         <section className="space-y-4">
-          <TransactionQueue transactions={transactions} selectedId={selectedId} onSelect={selectTxn} disabled={running} />
-          {txn && <TransactionDetail txn={txn} />}
-
           <div className="card">
             <div className="card-header">
-              <span className="label">Evidence</span>
+              <span className="label">1 · Evidence</span>
               <span className="text-[11px] text-slate-500">PDF text and JPEG images matched with EmbeddingGemma 2</span>
             </div>
             <div className="space-y-3 p-4">
@@ -261,14 +297,48 @@ export default function AutoDisputeConcierge() {
                 <button className="btn-secondary" onClick={useSample} disabled={running || !samples.length}>
                   <FileIcon className="h-4 w-4" /> Use Sample PDF
                 </button>
-                <button className="btn-primary flex-1" onClick={run} disabled={!file || !txn || running}>
-                  {running ? <Spinner /> : <SparkIcon />}
-                  {running ? "Building package…" : "Match evidence & build package"}
+                <button className="btn-primary flex-1" onClick={matchFile} disabled={!file || running}>
+                  {matching ? <Spinner /> : <SparkIcon />}
+                  {matching ? "Matching against dispute queue…" : evidence ? "Match again" : "Match evidence"}
                 </button>
               </div>
-              {(caseState || running) && <PipelineStages stages={caseState?.stages} />}
             </div>
           </div>
+
+          {evidence && (
+            <MatchResults
+              evidence={evidence}
+              transactions={transactions}
+              selectedId={selectedId}
+              onSelect={selectTxn}
+              disabled={running}
+            />
+          )}
+
+          {evidence && match && (
+            <div className="card">
+              <div className="card-header">
+                <span className="label">2 · Build evidence package</span>
+                <span className="truncate font-mono text-[11px] text-slate-500">{txn?.merchant_descriptor}</span>
+              </div>
+              <div className="space-y-3 p-4">
+                <MatchPanel match={match} />
+                <button className="btn-primary w-full" onClick={build} disabled={!buildable || running}>
+                  {building ? <Spinner /> : <SparkIcon />}
+                  {building ? "Building package…" : "Build evidence package"}
+                </button>
+                {!buildable && (
+                  <p className="text-[11px] text-slate-500">
+                    This file doesn't support the selected transaction, so no package can be built for it.
+                  </p>
+                )}
+                {(caseState || busy) && <PipelineStages stages={caseState?.stages} />}
+              </div>
+            </div>
+          )}
+
+          <TransactionQueue transactions={transactions} selectedId={selectedId} onSelect={selectTxn} disabled={running} />
+          {txn && <TransactionDetail txn={txn} />}
 
           <SampleLibrary
             samples={samples}
@@ -281,37 +351,45 @@ export default function AutoDisputeConcierge() {
             onScore={scoreAll}
             disabled={running}
           />
-
-          {caseState?.match && (
-            <div className="card">
-              <div className="card-header">
-                <span className="label">Evidence match</span>
-                <span className="font-mono text-[11px] text-slate-500">{caseState.case_id}</span>
-              </div>
-              <div className="p-4">
-                <MatchPanel match={caseState.match} />
-              </div>
-            </div>
-          )}
         </section>
 
-        {/* Right: live PDF preview */}
+        {/* Right: evidence preview, then letter and package review */}
         <section className="lg:sticky lg:top-[108px] lg:self-start">
           <div className="card flex h-[calc(100vh-132px)] min-h-[560px] flex-col">
             <div className="card-header gap-3">
               <div className="min-w-0">
-                <div className="label">{packageReady ? "Legal chargeback package" : file ? "Evidence preview" : "Preview"}</div>
+                <div className="label">{packageReady ? "Review before download" : file ? "Evidence preview" : "Preview"}</div>
                 <div className="truncate font-mono text-[11px] text-slate-500">
                   {packageReady
                     ? `${caseState.case_id} · letter by ${caseState.letter.model}`
                     : file?.name || "No document loaded"}
                 </div>
               </div>
-              {packageReady && caseState.letter.fallback && <span className="tag tag-amber">Template letter</span>}
+              {packageReady && (
+                <div className="flex items-center gap-2">
+                  {caseState.letter.fallback && <span className="tag tag-amber">Template letter</span>}
+                  <div className="flex rounded-md bg-slate-100 p-0.5 text-xs font-medium">
+                    {[
+                      ["letter", "Letter"],
+                      ["package", "Package PDF"],
+                    ].map(([key, label]) => (
+                      <button
+                        key={key}
+                        onClick={() => setView(key)}
+                        className={`rounded px-2.5 py-1 ${view === key ? "bg-white shadow-sm" : "text-slate-500"}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="relative flex-1 bg-slate-100">
-              {packageReady ? (
+            <div className="relative flex-1 overflow-hidden bg-slate-100">
+              {packageReady && view === "letter" ? (
+                <LetterPreview caseState={caseState} />
+              ) : packageReady ? (
                 <iframe
                   key={caseState.case_id}
                   title="Legal chargeback package"
@@ -334,16 +412,22 @@ export default function AutoDisputeConcierge() {
               )}
               {running && (
                 <div className="absolute inset-x-0 top-0 flex items-center gap-2 bg-amber-50/95 px-4 py-2 text-xs font-medium text-amber-800">
-                  <Spinner className="h-3.5 w-3.5" /> Generating chargeback package with local models…
+                  <Spinner className="h-3.5 w-3.5" />
+                  {matching ? "Matching evidence with EmbeddingGemma 2…" : "Writing the letter and building the package…"}
                 </div>
               )}
             </div>
 
-            <div className="border-t border-slate-200 p-3">
+            <div className="flex gap-2 border-t border-slate-200 p-3">
+              {packageReady && (
+                <button className="btn-secondary py-3" onClick={resetCase}>
+                  Discard
+                </button>
+              )}
               <a
                 href={packageReady ? api.packageUrl(caseState.package_url, true) : undefined}
                 aria-disabled={!packageReady}
-                className={`btn w-full py-3 text-sm font-semibold ${
+                className={`btn flex-1 py-3 text-sm font-semibold ${
                   packageReady
                     ? "bg-emerald-600 text-white hover:bg-emerald-700"
                     : "pointer-events-none bg-slate-200 text-slate-400"

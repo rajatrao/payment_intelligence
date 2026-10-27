@@ -1,8 +1,6 @@
 import { Spinner } from "./Icons.jsx";
 
 const LABELS = {
-  extract: "Extract text",
-  embed_match: "Embed & match",
   generate_letter: "gemma2 letter",
   render_pdf: "ReportLab PDF",
 };
@@ -16,7 +14,7 @@ const STYLE = {
 
 export default function PipelineStages({ stages }) {
   return (
-    <ol className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+    <ol className="grid grid-cols-2 gap-1.5">
       {Object.entries(LABELS).map(([key, label], i) => {
         const s = stages?.[key] || { state: "pending" };
         const fallback = s.fallback || (s.model || "").includes("fallback");

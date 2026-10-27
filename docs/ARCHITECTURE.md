@@ -86,7 +86,7 @@ flowchart TB
     subgraph api["main.py (FastAPI)"]
         routes["Routes<br/>/api/health · /api/disputes/* · /api/card-optimizer/* · /api/liquidity-guard/* (423)"]
         pipeline["run_pipeline()<br/>asyncio task per case"]
-        store[("DISPUTES · PACKAGES<br/>in-memory dicts")]
+        store[("EVIDENCE · DISPUTES · PACKAGES<br/>in-memory dicts")]
     end
     data["data/transactions/"]
     samples["samples.py"]
@@ -116,7 +116,9 @@ flowchart TB
 
 Concurrency notes
 
-- Each `POST /api/disputes/cases` returns `202` immediately and spawns one `asyncio` task.
+- `POST /api/disputes/evidence` runs inline: it embeds the file once (or reuses Chroma) and embeds 5 facets per
+  disputed transaction.
+- Each `POST /api/disputes/cases` returns `202` immediately and spawns one `asyncio` task (letter, then PDF).
 - CPU-bound steps (text extraction, ReportLab rendering) run in worker threads via `asyncio.to_thread`, so the
   event loop keeps serving status polls.
 - Embedding inputs are sent to `/api/embed` in batches of 16. Evidence already in Chroma is not re-embedded;
@@ -136,7 +138,8 @@ frontend/src/
 │   ├── LockWall.jsx            Blurred skeleton + lock overlay for Card Optimizer and Liquidity Guard
 │   ├── Dropzone.jsx            Drag-and-drop / click upload, PDF (text matched) or JPEG (image matched)
 │   ├── SampleLibrary.jsx       Sample documents, Load / Download, "Score all vs selected transaction"
-│   ├── PipelineStages.jsx      4-stage progress strip (pending / running / done / failed)
+│   ├── MatchResults.jsx        Step 1 result: the file ranked against every disputed transaction
+│   ├── PipelineStages.jsx      Build progress strip: letter, PDF (pending / running / done / failed)
 │   ├── MatchPanel.jsx          Score, sub-score bars, field checks, cosine heatmap
 │   └── Icons.jsx               Inline SVG icons
 └── modules/
@@ -153,8 +156,9 @@ flowchart TB
     ADC --> Dropzone
     ADC --> PipelineStages
     ADC --> SampleLibrary
+    ADC --> MatchResults
     ADC --> MatchPanel
-    ADC --> Preview["PDF iframe + Download button"]
+    ADC --> Preview["Letter preview / package PDF tabs<br/>Discard + Download"]
 ```
 
 Auto-Dispute Concierge screen layout (desktop, `lg` breakpoint and up):
@@ -162,12 +166,13 @@ Auto-Dispute Concierge screen layout (desktop, `lg` breakpoint and up):
 ```
 ┌──────────────────────────── Header: brand · 3 tabs · Ollama badge ────────────────────────────┐
 ├───────────── Left 5/12 ─────────────┬──────────────────── Right 7/12 (sticky) ───────────────┤
-│ Dispute queue (5 transactions)      │ Preview header (evidence name or case id + model)      │
-│ Original transaction detail         │                                                        │
-│ Evidence: dropzone                  │      <iframe> evidence PDF  ──►  chargeback package     │
-│   [Use Sample PDF] [Match & build]  │                                                        │
-│   Pipeline stages 1-4               │                                                        │
-│ Evidence match: score, checks, heat │ [ Download Legal Chargeback Package (PDF) ]            │
+│ 1 · Evidence: dropzone              │ Preview header (file, or case id + [Letter|Package])   │
+│   [Use Sample PDF] [Match evidence] │                                                        │
+│ Match results: all transactions     │   evidence PDF / image  ──►  letter  ⇄  package PDF     │
+│ 2 · Build: score, checks, heatmap   │                                                        │
+│   [Build evidence package] stages   │                                                        │
+│ Dispute queue · transaction detail  │                                                        │
+│ Sample evidence library             │ [Discard] [ Download Legal Chargeback Package (PDF) ]  │
 └─────────────────────────────────────┴────────────────────────────────────────────────────────┘
 ```
 
@@ -178,11 +183,14 @@ Frontend state (all local `useState` in `AutoDisputeConcierge`):
 | `transactions`, `sampleTxnId` | Loaded once from `GET /api/disputes/transactions` |
 | `selectedId` | Selected transaction (defaults to the sample transaction) |
 | `file` | Evidence `File` (dropped, picked, or fetched from the sample endpoint) |
+| `evidence` | Step 1 result from `POST /api/disputes/evidence` (ranking + per-transaction matches) |
 | `caseState` | Latest `DisputeCase` from polling |
-| `busy`, `error` | Request in flight, last error |
+| `view` | Review tab: `letter` or `package` |
+| `matching`, `busy`, `error` | Match in flight, build in flight, last error |
 
-The right pane shows, in priority order: generated package → local evidence PDF (object URL) → evidence image →
-empty state. Selecting another transaction or file resets the case.
+The right pane shows, in priority order: built package (letter or PDF tab) → local evidence PDF (object URL) →
+evidence image → empty state. A new file clears the match results; selecting another transaction keeps them
+(they cover every transaction) and only clears the built package. **Discard** clears the package.
 
 ## 5. Auto-Dispute Concierge end-to-end flow
 
@@ -210,38 +218,49 @@ sequenceDiagram
     end
     FE->>FE: Show evidence in iframe (object URL)
 
-    U->>FE: Click "Match evidence & build package"
-    FE->>BE: POST /api/disputes/cases (multipart: transaction_id, file)
+    Note over U,O: Step 1: match evidence (no letter, no PDF)
+    U->>FE: Click "Match evidence"
+    FE->>BE: POST /api/disputes/evidence (multipart: file)
     BE->>BE: Validate size (≤15 MB) and type (magic bytes)
+    BE->>BE: PDF: extract_text (pypdf) and chunk · JPEG: no text (no OCR)
+    BE->>C: get(where doc_id = sha256(file)[:32])
+    alt Not stored yet, or stored with another model
+        BE->>O: POST /api/embed model=embeddinggemma-2 (N chunks, or 1 image)
+        O-->>BE: evidence vectors
+        BE->>C: add(ids doc_id:i, embeddings, documents, metadatas)
+    else Already stored
+        C-->>BE: stored chunks + vectors
+    end
+    loop each disputed transaction
+        BE->>O: POST /api/embed (5 transaction facets as queries)
+        O-->>BE: facet vectors
+        BE->>BE: cosine matrix + field checks → MatchResult
+    end
+    BE-->>FE: Evidence {evidence_id, ranking, matched_transaction_id or null, matches}
+    FE->>FE: Show ranking, select the matched transaction or flag it as matching none
+
+    Note over U,O: Step 2: build the package (PARTIAL or STRONG match only)
+    U->>FE: Click "Build evidence package"
+    FE->>BE: POST /api/disputes/cases (transaction_id, evidence_id)
     BE->>T: asyncio.create_task(run_pipeline)
-    BE-->>FE: 202 DisputeCase {status: processing}
+    BE-->>FE: 202 DisputeCase {status: processing, match}
 
     loop every 700 ms until status ≠ processing
         FE->>BE: GET /api/disputes/cases/{case_id}
         BE-->>FE: DisputeCase (stages update live)
     end
 
-    T->>T: 1. PDF: extract_text (pypdf) and chunk · JPEG: no text (no OCR)
-    T->>C: 2. get(where doc_id = sha256(file)[:32])
-    alt Not stored yet, or stored with another model
-        T->>O: POST /api/embed model=embeddinggemma-2 (N chunks, or 1 image)
-        O-->>T: evidence vectors
-        T->>C: add(ids doc_id:i, embeddings, documents, metadatas)
-    else Already stored
-        C-->>T: stored chunks + vectors
-    end
-    T->>O: POST /api/embed (5 transaction facets as queries)
-    O-->>T: facet vectors
-    T->>T: cosine matrix + field checks → MatchResult
-    T->>O: 3. POST /api/generate (gemma2, compliance-officer prompt)
+    T->>O: 1. POST /api/generate (gemma2, compliance-officer prompt)
     O-->>T: letter text
     T->>T: scrub filler / markdown
-    T->>T: 4. ReportLab package + append original evidence (Exhibit A)
+    T->>T: 2. ReportLab package + append original evidence (Exhibit A)
     T->>BE: PACKAGES[case_id] = bytes, status = complete
 
+    FE->>FE: Show letter text for review (Letter tab)
+    U->>FE: Optional: Package PDF tab
     FE->>BE: GET /api/disputes/cases/{id}/package.pdf (iframe, inline)
     BE-->>FE: application/pdf
-    U->>FE: Click Download
+    U->>FE: Click Download (or Discard)
     FE->>BE: GET .../package.pdf?download=true
     BE-->>U: attachment Legal_Chargeback_Package_{id}.pdf
 ```
@@ -250,21 +269,22 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> processing: POST /disputes (202)
+    [*] --> matched: POST /api/disputes/evidence
+    matched --> processing: POST /api/disputes/cases (202), PARTIAL or STRONG only
     state processing {
-        [*] --> extract
-        extract --> embed_match
-        embed_match --> generate_letter
+        [*] --> generate_letter
         generate_letter --> render_pdf
         render_pdf --> [*]
     }
     processing --> complete: all stages done
     processing --> failed: any stage raises
-    complete --> [*]
+    complete --> reviewed: letter and PDF shown in the UI
+    reviewed --> [*]: Download or Discard
     failed --> [*]
 ```
 
-Each stage moves `pending → running → done | failed` and records a timestamp plus detail (method, model,
+Matching is not a case: it is a synchronous request whose result is kept in `EVIDENCE` (in memory, latest 50
+files) so a case can reuse it by `evidence_id`. A case only has the two build stages. Each stage moves `pending → running → done | failed` and records a timestamp plus detail (method, model,
 fallback flag, byte count, or error). On failure, the stage that was running is marked `failed` and the case
 carries the error string.
 
@@ -277,6 +297,7 @@ There is **no case database yet**. Evidence embeddings are persisted in Chroma; 
 | Store | Where | Lifetime |
 | --- | --- | --- |
 | Mock transactions | Python lists in `app/data/transactions/{disputes,cross_border,recurring}.py` | Static, read-only |
+| Match results | `EVIDENCE: dict[evidence_id, Evidence]` in `main.py` (latest 50 files, with bytes and per-transaction matches) | Until process restart |
 | Dispute cases | `DISPUTES: dict[case_id, DisputeCase]` in `main.py` | Until process restart |
 | Generated packages | `PACKAGES: dict[case_id, bytes]` in `main.py` | Until process restart |
 | Sample documents | `_cache` in `services/samples.py`, generated lazily (byte-stable: ReportLab `invariant=1`) | Until process restart |
@@ -353,7 +374,7 @@ erDiagram
     }
     PIPELINE_STAGE {
         string case_id FK
-        string name "extract | embed_match | generate_letter | render_pdf"
+        string name "generate_letter | render_pdf"
         string state "pending | running | done | failed"
         datetime at
         json detail "method, model, fallback, bytes, error"
@@ -423,12 +444,10 @@ document counts under `vector_store`.
 {
   "case_id": "CB-20261027-B40DF6",
   "transaction_id": "txn_9f3a71c2",
+  "evidence_id": "342e1037d829879d7325937bb091fb27",
   "status": "complete",
   "created_at": "2026-10-27T16:19:26.314176+00:00",
   "stages": {
-    "extract":         { "state": "done", "at": "…", "method": "pypdf", "characters": 1532 },
-    "embed_match":     { "state": "done", "at": "…", "model": "embeddinggemma-2",
-                         "doc_id": "342e1037d829879d7325937bb091fb27", "vectors": "reused from Chroma" },
     "generate_letter": { "state": "done", "at": "…", "model": "gemma2:2b", "fallback": false },
     "render_pdf":      { "state": "done", "at": "…", "bytes": 9811 }
   },
@@ -575,7 +594,9 @@ Interactive docs: http://localhost:8000/docs
 | GET | `/api/disputes/samples/{id}` | Sample PDF or JPEG, inline (`?download=true` for attachment) | `application/pdf` or `image/jpeg` / 404 |
 | GET | `/api/disputes/samples/{id}/text` | Extracted text of a sample | JSON |
 | GET | `/api/disputes/sample-invoice` | Alias of the EUROSITES sample | `application/pdf` |
-| POST | `/api/disputes/cases` | Start a case. Multipart: `transaction_id` (required), and `file` (PDF/JPEG) **or** `sample_id` (`use_sample=true` = EUROSITES) | `202` DisputeCase; 400 / 404 / 413 / 415 |
+| POST | `/api/disputes/evidence` | Step 1. Multipart: `file` (PDF/JPEG) **or** `sample_id` (`use_sample=true` = EUROSITES). Embeds or reuses vectors and matches against every disputed transaction | Evidence JSON; 400 / 404 / 413 / 415 / 503 |
+| GET | `/api/disputes/evidence/{evidence_id}` | Stored step 1 result | Evidence JSON / 404 |
+| POST | `/api/disputes/cases` | Step 2. Multipart: `transaction_id`, `evidence_id`. Writes the letter and renders the package | `202` DisputeCase; 404; 409 if the match is WEAK |
 | GET | `/api/disputes/cases/{case_id}` | Poll case status | DisputeCase / 404 |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package, inline (`?download=true` for attachment) | `application/pdf` / 404 until ready |
 | GET, POST | `/api/card-optimizer/*`, `/api/liquidity-guard/*` | Locked modules | `423 {"locked": true, "detail": "…"}` |
@@ -603,19 +624,20 @@ All settings are environment variables, read in `config.py` and passed through `
 
 | Situation | Behaviour | Visible where |
 | --- | --- | --- |
-| Ollama unreachable | Stage 2 fails: "Ollama is unreachable at …". Sample scoring returns 503. | Header badge red, red stage, error banner |
-| EmbeddingGemma 2 not installed (404) | Stage 2 fails: "Run: ollama pull embeddinggemma-2". No substitute embedder. | Header badge amber, red stage, error banner |
-| gemma2 not installed (404) | Next tag in `OLLAMA_TEXT_MODEL_FALLBACKS`, then the template letter | Stage 3 shows the model used; "Template letter" tag; PDF footer and note |
-| `ALLOW_OFFLINE_FALLBACK=false` and no gemma2 | Stage 3 fails; the case goes to `failed` | Red stage, error banner |
+| Ollama unreachable | Match evidence and sample scoring return 503: "Ollama is unreachable at …" | Header badge red, error banner |
+| EmbeddingGemma 2 not installed (404) | Match returns 503: "Run: ollama pull embeddinggemma-2". No substitute embedder. | Header badge amber, error banner |
+| Evidence matches no transaction | Every transaction scores WEAK; `matched_transaction_id` is null; building returns 409 | Red "doesn't match any disputed transaction" banner, build button disabled |
+| gemma2 not installed (404) | Next tag in `OLLAMA_TEXT_MODEL_FALLBACKS`, then the template letter | Letter stage shows the model used; "Template letter" tag; PDF footer and note |
+| `ALLOW_OFFLINE_FALLBACK=false` and no gemma2 | Letter stage fails; the case goes to `failed` | Red stage, error banner |
 | JPEG evidence | Embedded as an image; field checks N/A; `note` explains | Amber note in the match panel |
-| Model tag can't embed images, or Ollama rejects the image request | Stage 2 fails with Ollama's error text | Red stage, error banner |
+| Model tag can't embed images, or Ollama rejects the image request | Match returns 503 with Ollama's error text | Red stage, error banner |
 | Scanned PDF (no text layer) | Score near zero; `note` suggests uploading as JPEG; still attached as Exhibit A | Amber note in the match panel |
-| Malformed evidence PDF | Text extraction returns empty; Exhibit A merge is skipped, the package still renders | Stage 1 detail |
+| Malformed evidence PDF | Text extraction returns empty; Exhibit A merge is skipped, the package still renders | Match note |
 | Wrong file type | `415` before any processing | Error banner |
 | File over 15 MB | `413` | Error banner |
-| Backend restart | All cases and packages lost; stored embeddings survive in Chroma | Package URL returns 404 |
-| `OLLAMA_EMBED_MODEL` changed | Stored vectors from the old model are ignored, deleted and re-embedded on next use | Stage 2 shows "embedded and stored in Chroma" |
-| Same file uploaded again | Vectors reused, only facets embedded | Stage 2 shows "reused from Chroma" |
+| Backend restart | Match results, cases and packages lost (match again); stored embeddings survive in Chroma | 404 "match it again" |
+| `OLLAMA_EMBED_MODEL` changed | Stored vectors from the old model are ignored, deleted and re-embedded on next use | Match results say "embedded and stored in Chroma" |
+| Same file uploaded again | Vectors reused, only facets embedded | Match results say "reused from Chroma" |
 
 ## 14. Module gating (Card Optimizer and Liquidity Guard)
 

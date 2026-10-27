@@ -19,12 +19,17 @@ For the full blueprint (diagrams, data schemas, request flow, algorithms, API an
 
 ```mermaid
 flowchart LR
-    A["Upload PDF / JPEG<br/>or load a sample"] --> B["1. Read evidence<br/>PDF text via pypdf · JPEG as image<br/>(no OCR)"]
-    B --> C["2. Embed & match<br/>EmbeddingGemma 2 via /api/embed<br/>vectors stored in Chroma<br/>cosine matrix + field checks"]
-    C --> D["3. Write letter<br/>Ollama gemma2"]
-    D --> E["4. Build PDF<br/>ReportLab + Exhibit A"]
-    E --> F["Inline preview<br/>+ Download"]
+    A["Upload PDF / JPEG<br/>or load a sample"] --> B["Match evidence<br/>EmbeddingGemma 2 + Chroma<br/>scored against every<br/>disputed transaction"]
+    B -->|"no match"| X["Shown as not matching<br/>any transaction"]
+    B -->|"match"| D["Build evidence package<br/>gemma2 letter<br/>ReportLab PDF + Exhibit A"]
+    D --> F["Review the letter<br/>and package PDF"]
+    F -->|"keep"| G["Download"]
+    F -->|"discard"| B
 ```
+
+The screen has two separate steps, so you can try many files before building anything:
+**Match evidence** scores a file against the whole dispute queue, and **Build evidence package** writes the letter
+and PDF for one matched transaction, which you review before deciding to download.
 
 1. **Evidence in.** Drop a PDF, click **Use Sample PDF** to load a pre-built invoice from EUROSITES ADVERTISING
    LTD (USD 18,450.00, 12/09/2026) that backs transaction `txn_9f3a71c2`, or load any document from the
@@ -35,19 +40,21 @@ flowchart LR
    (`embeddinggemma-2`). The model keeps nothing, so the vectors are saved in **Chroma**, an embedded vector
    store kept on a Docker volume. Files are keyed by the SHA-256 of their bytes: uploading the same file again,
    or re-scoring a sample, reuses the stored vectors instead of embedding again.
-4. **Match.** The transaction is turned into five facets (merchant, amount, date, reference, purpose), which are
+4. **Match (step 1).** The file is scored against every disputed transaction, ranked, and flagged as backing one
+   of them or none. Each transaction is turned into five facets (merchant, amount, date, reference, purpose), which are
    embedded as queries on every match. A facets × chunks cosine-similarity matrix against the stored vectors gives
    a semantic score. For a JPEG, each facet is compared with the stored image vector. For PDFs the semantic score is
    blended 60/40 with exact checks on amount, date, merchant and invoice reference, giving a score and a verdict
    (STRONG, PARTIAL or WEAK).
-5. **Letter.** `gemma2` writes a formal, aggressive chargeback letter to the card network, acting as a Senior
+5. **Letter (step 2).** For the selected transaction (only PARTIAL or STRONG matches can be built), `gemma2` writes a formal, aggressive chargeback letter to the card network, acting as a Senior
    Corporate Treasury Compliance Officer, with no chat filler.
 6. **Package.** ReportLab stitches the transaction summary, match evidence, letter and ranked excerpts into one
    PDF, with the original evidence appended as Exhibit A.
-7. **Review.** The PDF appears in an inline preview next to the transaction, with a
-   **Download Legal Chargeback Package (PDF)** button.
+7. **Review.** The letter appears in the preview pane first, with a tab for the full package PDF. Click
+   **Download Legal Chargeback Package (PDF)** to keep it, or **Discard** to drop it.
 
-The pipeline runs as a background task. The UI polls the case and shows each of the four stages live.
+Matching is a single request. Building runs as a background task; the UI polls the case and shows the letter and
+PDF stages live.
 
 ### Sample evidence library
 
@@ -149,10 +156,12 @@ template letter.
 1. Open the **Auto-Dispute Concierge** tab.
 2. Click **Score all vs selected transaction** in the sample library: the EUROSITES Q4 invoice scores highest,
    the decoys and other documents score low.
-3. Click **Use Sample PDF**. The EUROSITES transaction is selected and the invoice appears in the preview.
-4. Click **Match evidence & build package**. Watch the four stages complete and the match score appear.
-5. Review the generated package in the preview, then click **Download Legal Chargeback Package (PDF)**.
-6. Select another transaction (for example Datadog), score again, and load its matching document or a decoy.
+3. Load the **London hotel folio** decoy and click **Match evidence**: every transaction scores WEAK and the
+   file is flagged as matching no disputed transaction. Try the taxi photo or the EUROSITES Q2 invoice too.
+4. Click **Use Sample PDF**, then **Match evidence**. The EUROSITES transaction ranks first and is selected.
+5. Click **Build evidence package**. Read the letter in the preview, switch to **Package PDF**, then click
+   **Download Legal Chargeback Package (PDF)** or **Discard**.
+6. Load another document (for example the Datadog invoice or the Northwind photo) and match again.
 7. Click the Card Optimizer and Liquidity Guard tabs to see the lock walls.
 
 ## Configuration
@@ -204,7 +213,9 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | GET | `/api/disputes/samples` | Sample evidence library |
 | GET | `/api/disputes/samples/{id}` | Sample PDF or JPEG (`?download=true` to download) |
 | GET | `/api/disputes/samples/scores?transaction_id=…` | Match one transaction against every sample |
-| POST | `/api/disputes/cases` | Start a case (`transaction_id` + `file`, or `transaction_id` + `sample_id`) |
+| POST | `/api/disputes/evidence` | Step 1: match a file (`file`, or `sample_id`) against every disputed transaction |
+| GET | `/api/disputes/evidence/{evidence_id}` | Stored match results for a file |
+| POST | `/api/disputes/cases` | Step 2: build the letter and package (`transaction_id` + `evidence_id`) |
 | GET | `/api/disputes/cases/{case_id}` | Poll case status and results |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package (`?download=true` to download) |
 | * | `/api/card-optimizer/*`, `/api/liquidity-guard/*` | `423 Locked` |
