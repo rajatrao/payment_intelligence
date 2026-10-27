@@ -118,7 +118,13 @@ async def search_evidence(transaction_id: str, limit: int = 5):
         _, facet_vecs, _ = await facet_vectors(txn)
         candidates = vector_store.search(facet_vecs)
         results = []
-        for hit in candidates[:max(1, min(limit, 20))]:
+        # Photos and text sit in different regions of the embedding space (the "modality gap"), so photo distances
+        # are larger than PDF distances for the same transaction. Shortlist each kind separately so photos aren't
+        # crowded out by PDFs.
+        limit = max(1, min(limit, 20))
+        shortlist = ([h for h in candidates if h["kind"] != "jpeg"][:limit]
+                     + [h for h in candidates if h["kind"] == "jpeg"][:max(1, limit // 2)])
+        for hit in shortlist:
             doc = vector_store.load(hit["doc_id"])
             if doc is None:
                 continue

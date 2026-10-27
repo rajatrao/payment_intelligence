@@ -20,6 +20,10 @@ from app.services.vector_store import IMAGE_LABEL
 
 SEMANTIC_WEIGHT = 0.6
 FIELD_WEIGHT = 0.4
+# Photos: the language model's reading of amount/date/merchant is far more reliable than photo-to-text similarity,
+# so it carries most of the weight.
+IMAGE_SEMANTIC_WEIGHT = 0.3
+IMAGE_FIELD_WEIGHT = 0.7
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -93,11 +97,27 @@ def _merchant_tokens(txn: dict) -> list[str]:
             if t not in {"ltd", "limited", "inc", "llc", "corp"}]
 
 
+def _date_readings(fields: dict) -> list[str]:
+    """ISO dates the evidence could mean. A date printed as 09/02/2026 is 2 Sep (US) or 9 Feb (day first), and
+    the model may pick either, so both readings of the printed text are tried."""
+    out = [fields["document_date"]] if fields.get("document_date") else []
+    m = re.search(r"\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b", fields.get("document_date_text") or "")
+    if m:
+        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        for month, day in ((a, b), (b, a)):
+            try:
+                out.append(date(y, month, day).isoformat())
+            except ValueError:
+                pass
+    return out
+
+
 def extracted_checks(txn: dict, fields: dict) -> list[dict]:
     """Field checks against the values gemma3 read from the evidence (used for photos)."""
     amount = fields.get("total_amount")
     amount_hit = amount is not None and abs(float(amount) - txn["amount"]) < 0.01
-    date_hit = fields.get("document_date") if fields.get("document_date") in _date_window(txn) else None
+    window = _date_window(txn)
+    date_hit = next((d for d in _date_readings(fields) if d in window), None)
     tokens = _merchant_tokens(txn)
     seen = f"{fields.get('merchant') or ''} {fields.get('description') or ''}".lower()
     merchant_hit = bool(tokens) and sum(t in seen for t in tokens) / len(tokens) >= 0.5
@@ -105,7 +125,7 @@ def extracted_checks(txn: dict, fields: dict) -> list[dict]:
     ref_hit = bool(ref) and bool(read_ref) and (ref in read_ref or read_ref in ref)
     checks = _checks(txn, amount_hit, date_hit, merchant_hit, ref_hit)
     read = [f"{fields.get('currency') or ''} {amount:,.2f}".strip() if amount is not None else None,
-            fields.get("document_date"), fields.get("merchant"), fields.get("reference")]
+            date_hit or fields.get("document_date"), fields.get("merchant"), fields.get("reference")]
     return [{**c, "read": v} for c, v in zip(checks, read)]
 
 
@@ -239,7 +259,7 @@ def _match_image(txn: dict, facets: dict, facet_vecs: list, image_vec: list, med
         checks = extracted_checks(txn, fields)
         scored = [c for c in checks if c.get("applicable", True)]
         field_score = sum(c["matched"] for c in scored) / len(scored)
-        sem_w, field_w = SEMANTIC_WEIGHT, FIELD_WEIGHT
+        sem_w, field_w = IMAGE_SEMANTIC_WEIGHT, IMAGE_FIELD_WEIGHT
     else:
         # Without gemma3's reading there is nothing exact to check, so the embedding decides alone.
         checks = [{**c, "matched": False, "applicable": False} for c in field_checks(txn, "")]

@@ -552,8 +552,10 @@ little. Instead each facet's cosine is compared with the median cosine of the sa
 queue (`image_baseline`): the lift over that median is rescaled `lift / 0.06` (`IMAGE_MARGIN`) and clamped to 0..1,
 and the score is the mean of the 3 largest lifts (`IMAGE_TOP_FACETS`, since a photo rarely shows every detail).
 An image therefore only ranks high for a transaction it resembles clearly more than the others. Its field checks
-use the values gemma3 read from the photo (shown as `read:` in the match panel), with the same 60/40 blend and
-amount gate as PDFs. If gemma3 is unavailable, the image is scored on the relative semantic score alone (weight 1.0).
+use the values gemma3 read from the photo (shown as `read:` in the match panel). For photos the blend is 30/70
+(`IMAGE_SEMANTIC_WEIGHT` / `IMAGE_FIELD_WEIGHT`), because the reading is far more reliable than photo-to-text
+similarity, with the same amount gate as PDFs. A printed date like `09/02/2026` is tried both month-first and
+day-first (`document_date_text`). If gemma3 is unavailable, the image is scored on the relative semantic score alone (weight 1.0).
 Facet vectors are cached per process, so scoring against the queue costs no extra Ollama calls after the first.
 The match result carries `image_lifts` (cosine, queue median, lift, and whether it was among the top 3), and the
 match panel hides the cosine heatmap for photos (raw photo cosines look alike for every transaction) and labels
@@ -575,7 +577,9 @@ first Chroma record (`fields`, `fields_model`), so each file is read once. Extra
 
 **Evidence search (transaction → files).** `GET /api/disputes/transactions/{id}/evidence-search` embeds the
 transaction's facets, queries Chroma for the nearest records to each facet (cosine distance), groups them by
-document, and keeps the top `limit` (default 5). Each candidate is then read by gemma3 (cached) and fully matched,
+document, and keeps the top `limit` PDFs (default 5) plus the top `limit / 2` photos. Photos are shortlisted
+separately because their distances to text are always larger than a PDF's (the modality gap) and would otherwise
+be crowded out. Each candidate is then read by gemma3 (cached) and fully matched,
 and the list is re-ranked by match score. This is the retrieve-then-verify pattern meant for large document stores
 (for example Google Drive, later): Chroma search is cheap across thousands of files, and the language model only
 reads the shortlist. The sample library is indexed on first search and stands in for that store.

@@ -13,6 +13,9 @@ import re
 from app.config import settings
 from app.services.ollama_client import generate_json, image_b64
 
+# Bump when SCHEMA or PROMPT changes so readings cached in Chroma are refreshed.
+FIELDS_VERSION = 2
+
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -20,15 +23,18 @@ SCHEMA = {
         "total_amount": {"type": ["number", "null"]},
         "currency": {"type": ["string", "null"]},
         "document_date": {"type": ["string", "null"], "description": "ISO date YYYY-MM-DD"},
+        "document_date_text": {"type": ["string", "null"], "description": "the date exactly as printed"},
         "reference": {"type": ["string", "null"], "description": "invoice, receipt, order or contract number"},
         "description": {"type": "string", "description": "what was bought or contracted, one sentence"},
     },
-    "required": ["merchant", "total_amount", "currency", "document_date", "reference", "description"],
+    "required": ["merchant", "total_amount", "currency", "document_date", "document_date_text", "reference",
+                 "description"],
 }
 
 PROMPT = """You read payment evidence (invoices, receipts, contracts) for a card-dispute team.
 Return the issuing merchant's legal name, the total amount charged (number only, no thousands separators),
-its currency code, the document date as YYYY-MM-DD, the invoice/receipt/order/contract reference, and a
+its currency code, the document date as YYYY-MM-DD and exactly as printed, the invoice/receipt/order/contract
+reference, and a
 one-sentence description of what was bought. Use null for anything not shown. Do not guess.
 """
 

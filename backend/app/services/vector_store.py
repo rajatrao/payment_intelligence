@@ -117,11 +117,16 @@ async def index_document(data: bytes, filename: str, kind: str, text: str, sourc
             "cached": False}
 
 
+def _fields_key() -> str:
+    from app.services.fields import FIELDS_VERSION
+    return f"{settings.llm_model}|v{FIELDS_VERSION}"
+
+
 def get_fields(doc_id: str) -> dict | None:
     """Fields gemma3 extracted for this document, cached on its first record."""
     got = _collection().get(ids=[f"{doc_id}:0"], include=["metadatas"])
     meta = got["metadatas"][0] if got["ids"] else {}
-    if meta.get("fields") and meta.get("fields_model") == settings.llm_model:
+    if meta.get("fields") and meta.get("fields_model") == _fields_key():
         return json.loads(meta["fields"])
     return None
 
@@ -130,7 +135,7 @@ def set_fields(doc_id: str, fields: dict) -> None:
     rid = f"{doc_id}:0"
     got = _collection().get(ids=[rid], include=["metadatas"])
     if got["ids"]:
-        meta = {**got["metadatas"][0], "fields": json.dumps(fields), "fields_model": settings.llm_model}
+        meta = {**got["metadatas"][0], "fields": json.dumps(fields), "fields_model": _fields_key()}
         _collection().update(ids=[rid], metadatas=[meta])
 
 
