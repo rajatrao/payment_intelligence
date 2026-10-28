@@ -102,7 +102,7 @@ Amounts arrive as strings with separators and are parsed first.
 
 That is the demo: before classification every account looks safe; once the usage lines are recognised, card
 settlement falls below its buffer on 3 Nov and marketing on 6 Nov. In the UI each account card shows a donut of
-its bills (faded while not classified) that grows as the bills are classified.
+its bills (amounts starred while not classified) that grows as the bills are classified.
 
 ## 4. Decision API interaction
 

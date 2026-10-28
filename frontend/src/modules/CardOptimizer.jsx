@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import Donut, { REMAINDER, SERIES } from "../components/Donut.jsx";
 import { SparkIcon, Spinner } from "../components/Icons.jsx";
 
 const usd = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v || 0);
+const usd0 = (v) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v || 0);
+const compact = (v) => (v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : usd(v));
 const local = (amount, currency) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: currency === "JPY" ? 0 : 2 }).format(amount);
 
@@ -15,11 +19,41 @@ const REASON_TAG = {
   NO_CHANGE: "tag-slate",
 };
 
-function Stat({ label, value, tone = "" }) {
+// One header metric as a donut of the payments that make it up, with a legend that names each slice.
+function MetricCard({ title, center, value, tone, caption, slices, empty }) {
+  const total = slices.reduce((a, s) => a + s.value, 0) || 1;
+  const shown = slices.filter((s) => s.value > 0);
   return (
-    <div className="card px-3 py-1.5">
-      <div className="label">{label}</div>
-      <div className={`font-mono text-sm font-semibold tabular-nums ${tone}`}>{value}</div>
+    <div className="card p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="label">{title}</span>
+        <span className={`font-mono text-sm font-semibold tabular-nums ${tone}`}>{usd(value)}</span>
+      </div>
+      <div className="truncate text-[10px] text-slate-500">{caption}</div>
+      <div className="mt-2 flex items-center gap-3">
+        <Donut slices={slices} label={center} value={compact(value)} size={112} stroke={14} />
+        {shown.length ? (
+          <ul className="min-w-0 flex-1 space-y-0.5 text-[11px]">
+            {shown.map((s) => (
+              <li key={s.id} className="flex items-center gap-1.5">
+                <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: s.color }} />
+                <span
+                  className={`min-w-0 flex-1 truncate ${s.color === REMAINDER ? "text-slate-500" : "text-slate-700"}`}
+                  title={s.label}
+                >
+                  {s.short || s.label}
+                </span>
+                <span className="font-mono tabular-nums text-slate-900">{s.value >= 1000 ? usd0(s.value) : usd(s.value)}</span>
+                <span className="w-8 text-right font-mono tabular-nums text-slate-500">
+                  {Math.round((s.value / total) * 100)}%
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="flex-1 text-[11px] text-slate-500">{empty}</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -243,6 +277,19 @@ export default function CardOptimizer() {
   const all = Object.values(recs);
   const failed = data.payments.filter((p) => p.signals.failed);
   const feesPaid = data.payments.filter((p) => !p.signals.failed).reduce((s, p) => s + p.current_fee_usd, 0);
+  const blockedUsd = failed.reduce((s, p) => s + p.transaction.amount_usd, 0);
+  const feesAtStake = data.payments.reduce((s, p) => s + p.current_fee_usd, 0);
+  const recovered = all.reduce((s, r) => s + r.recovered_usd, 0);
+  const saved = all.reduce((s, r) => s + r.fees_saved_usd, 0);
+  // Each payment keeps its colour in every donut.
+  const color = Object.fromEntries(data.payments.map((p, i) => [p.transaction.id, SERIES[i % SERIES.length]]));
+  const slice = (p, v) => ({
+    id: p.transaction.id,
+    label: p.transaction.merchant,
+    short: p.transaction.merchant.split(" ")[0],
+    value: v,
+    color: color[p.transaction.id],
+  });
   const t = payment?.transaction;
 
   return (
@@ -254,12 +301,47 @@ export default function CardOptimizer() {
             Find cross-border payments hitting SCA challenges, regional blocks or FX fees, and route them through the card that clears them.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Stat label="Blocked or pending" value={`${failed.length} · ${usd(failed.reduce((s, p) => s + p.transaction.amount_usd, 0))}`} tone="text-red-600" />
-          <Stat label="FX + cross-border fees paid" value={usd(feesPaid)} tone="text-amber-600" />
-          <Stat label="Recovered" value={usd(all.reduce((s, r) => s + r.recovered_usd, 0))} tone="text-emerald-600" />
-          <Stat label="Fees saved" value={usd(all.reduce((s, r) => s + r.fees_saved_usd, 0))} tone="text-emerald-600" />
-        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          title="Blocked or pending"
+          center="Blocked"
+          value={blockedUsd}
+          tone="text-red-600"
+          caption={`${failed.length} payments declined or held, by amount`}
+          slices={failed.map((p) => slice(p, p.transaction.amount_usd))}
+        />
+        <MetricCard
+          title="FX + cross-border fees paid"
+          center="Fees paid"
+          value={feesPaid}
+          tone="text-amber-600"
+          caption="Fees on settled payments, by payment"
+          slices={data.payments.filter((p) => !p.signals.failed).map((p) => slice(p, p.current_fee_usd))}
+        />
+        <MetricCard
+          title="Recovered"
+          center="Recovered"
+          value={recovered}
+          tone="text-emerald-600"
+          caption={`of ${usd(blockedUsd)} blocked or pending`}
+          slices={[
+            ...failed.map((p) => slice(p, recs[p.transaction.id]?.recovered_usd || 0)),
+            { id: "rest", label: "Not recovered yet", value: Math.max(0, blockedUsd - recovered), color: REMAINDER },
+          ]}
+        />
+        <MetricCard
+          title="Fees saved"
+          center="Saved"
+          value={saved}
+          tone="text-emerald-600"
+          caption={`of ${usd(feesAtStake)} in fees across all payments`}
+          slices={[
+            ...data.payments.map((p) => slice(p, recs[p.transaction.id]?.fees_saved_usd || 0)),
+            { id: "rest", label: "Not saved yet", value: Math.max(0, feesAtStake - saved), color: REMAINDER },
+          ]}
+        />
       </div>
 
       {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">{error}</div>}

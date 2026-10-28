@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import Donut, { SERIES } from "../components/Donut.jsx";
 import { SparkIcon, Spinner } from "../components/Icons.jsx";
 
 const usd = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v || 0);
@@ -10,57 +11,16 @@ const pct = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(0)}%`);
 const usdK = (v) => (v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : usd0(v));
 const short = (account) => account.name.split(" (")[0].replace(/ account$/, "");
 
-// Categorical slots in fixed order (validated for colour-vision deficiency); a bill keeps its slot within its account.
-const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"];
-
-function Donut({ slices, size = 128, stroke = 16 }) {
-  const total = slices.reduce((a, s) => a + s.value, 0);
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const gap = slices.length > 1 ? 2 : 0;
-  let start = 0;
-  return (
-    <div className="relative shrink-0" style={{ width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#f1f5f9" strokeWidth={stroke} />
-        {slices.map((s) => {
-          const len = total ? (s.value / total) * c : 0;
-          const offset = -start;
-          start += len;
-          return (
-            <circle
-              key={s.id}
-              cx={size / 2}
-              cy={size / 2}
-              r={r}
-              fill="none"
-              stroke={s.color}
-              strokeOpacity={s.estimate ? 0.4 : 1}
-              strokeWidth={stroke}
-              strokeDasharray={`${Math.max(0, len - gap)} ${c}`}
-              strokeDashoffset={offset}
-              style={{ transition: "stroke-dasharray 700ms ease, stroke-dashoffset 700ms ease, stroke-opacity 700ms ease" }}
-            >
-              <title>{`${s.label}: ${usd0(s.value)} (${total ? Math.round((s.value / total) * 100) : 0}%)${
-                s.estimate ? ", billed so far" : ""
-              }`}</title>
-            </circle>
-          );
-        })}
-      </svg>
-      <div className="pointer-events-none absolute inset-0 grid place-items-center text-center">
-        <div>
-          <div className="text-[10px] text-slate-500">Forecast</div>
-          <div className="font-mono text-sm font-semibold tabular-nums">{usdK(total)}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function AccountCard({ account, bills, selected, onSelect }) {
   const own = account.bill_ids.map((id) => bills.find((b) => b.id === id));
-  const slices = own.map((b, i) => ({ id: b.id, label: b.vendor, value: b.projected, color: SERIES[i], estimate: !b.classified }));
+  const slices = own.map((b, i) => ({
+    id: b.id,
+    label: b.vendor,
+    value: b.projected,
+    color: SERIES[i],
+    estimate: !b.classified,
+    note: b.classified ? null : "billed so far",
+  }));
   const total = account.debits || 1;
   return (
     <button
@@ -81,11 +41,11 @@ function AccountCard({ account, bills, selected, onSelect }) {
         )}
       </div>
       <div className="mt-2 flex items-center gap-3">
-        <Donut slices={slices} />
+        <Donut slices={slices} label="Forecast" />
         <ul className="min-w-0 flex-1 space-y-1 text-[11px]">
           {slices.map((s) => (
             <li key={s.id} className="flex items-center gap-1.5">
-              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: s.color, opacity: s.estimate ? 0.4 : 1 }} />
+              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: s.color }} />
               <span className="min-w-0 flex-1 truncate text-slate-700">{s.label}</span>
               <span className="font-mono tabular-nums text-slate-900">
                 {usdK(s.value)}
