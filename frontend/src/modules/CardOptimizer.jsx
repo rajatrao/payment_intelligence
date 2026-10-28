@@ -219,6 +219,16 @@ export default function CardOptimizer() {
     }
   };
 
+  const reset = async () => {
+    setError(null);
+    try {
+      await api.resetRecommendations();
+      setRecs({});
+    } catch (e) {
+      setError(`Could not reset: ${e.message}`);
+    }
+  };
+
   const analyseAll = async () => {
     for (const p of data.payments) {
       setSelectedId(p.transaction.id);
@@ -257,9 +267,14 @@ export default function CardOptimizer() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,6fr)_minmax(0,6fr)]">
         <section className="space-y-4">
           <PaymentQueue payments={data.payments} recs={recs} selectedId={selectedId} onSelect={setSelectedId} />
-          <button className="btn-secondary w-full" onClick={analyseAll} disabled={!!busy}>
-            {busy ? <Spinner /> : <SparkIcon />} Analyze all payments
-          </button>
+          <div className="flex gap-2">
+            <button className="btn-secondary flex-1" onClick={analyseAll} disabled={!!busy}>
+              {busy ? <Spinner /> : <SparkIcon />} Analyze all payments
+            </button>
+            <button className="btn-secondary" onClick={reset} disabled={!!busy || !Object.keys(recs).length}>
+              Reset demo
+            </button>
+          </div>
         </section>
 
         {payment && (

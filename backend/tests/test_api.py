@@ -32,6 +32,13 @@ def test_recommend_stores_the_result(client):
     assert client.get("/api/card-optimizer/payments").json()["recommendations"]["txn_xb_01"] == rec
 
 
+def test_reset_clears_every_recommendation(client):
+    client.post("/api/card-optimizer/payments/txn_xb_01/recommend")
+    client.post("/api/card-optimizer/payments/txn_xb_02/recommend")
+    assert client.delete("/api/card-optimizer/recommendations").json() == {"cleared": 2}
+    assert client.get("/api/card-optimizer/payments").json()["recommendations"] == {}
+
+
 def test_unknown_payment_is_404(client):
     assert client.post("/api/card-optimizer/payments/nope/recommend").status_code == 404
 

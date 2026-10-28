@@ -209,7 +209,8 @@ back to the embedding alone, and the package is built with a clearly labelled te
    come back as `SCA_BYPASS_CORRIDOR` on the Irish lodged card, with the decision probabilities and the payment
    amount recovered.
 8. Click **Analyze all payments** to fill in the whole queue, then compare the header totals for fees paid,
-   recovered volume and fees saved. The card options table shows why each card is or isn't eligible.
+   recovered volume and fees saved. The card options table shows why each card is or isn't eligible. Click
+   **Reset demo** to clear the recommendations and start again.
 9. Click the Liquidity Guard tab to see the lock wall.
 
 ## Configuration
@@ -269,6 +270,7 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | GET | `/api/disputes/cases/{case_id}` | Poll case status and results |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package (`?download=true` to download) |
 | GET | `/api/card-optimizer/payments` | Card portfolio, analysed cross-border payments and any recommendations so far |
+| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (the **Reset demo** button) |
 | POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for a reason code and card (checked against the rule engine) |
 | * | `/api/liquidity-guard/*` | `423 Locked` |
 

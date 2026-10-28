@@ -65,7 +65,7 @@ Files:
 | `backend/app/main.py` | changed | `/api/card-optimizer/*` routes; module unlocked; decision model in `/api/health` |
 | `frontend/src/modules/CardOptimizer.jsx` | new | Totals, payment queue, recommendation with probability bars, card options table |
 | `frontend/src/App.jsx`, `api.js`, `components/Header.jsx` | changed | Tab unlocked, API calls, nimble in the status badge |
-| `backend/tests/*` | new | 45 tests (section 10) |
+| `backend/tests/*` | new | 46 tests (section 10) |
 | `scripts/check_card_decisions.py` | new | Runs all payments through the live backend and prints model vs rules |
 | `README.md`, `docs/ARCHITECTURE.md`, `.env.example`, `docker-compose.yml` | changed | Setup (`ollama pull nimble`, Ollama 0.35+), config, docs |
 
@@ -365,6 +365,8 @@ Decisions:
 ```
 
 Unknown id returns 404. Recommendations are kept in memory (`RECOMMENDATIONS` in `main.py`).
+`DELETE /api/card-optimizer/recommendations` clears them and returns `{"cleared": n}`; the UI's **Reset demo**
+button calls it.
 
 ## 10. Tests
 
@@ -376,14 +378,14 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-45 tests:
+46 tests:
 
 | File | What it covers |
 | --- | --- |
 | `tests/test_corridor.py` | Normalising the messy feed; FX and cross-border fee rules; reading decline codes and text; eligibility reasons; the rule answer for all 8 payments; savings and recovered volume |
 | `tests/test_decision_api.py` | The HTTP contract with `/v1/systemone` (path, `model`/`state`/`questions` body, `answers` returned) via `httpx.MockTransport`; 404 for a missing model vs an old Ollama; missing answers; unreachable Ollama |
 | `tests/test_card_optimizer.py` | Card options carry facts only (no "best", "eligible" or "can work" hints); the state excludes the rule answer; the two-call flow and the exact `proposed_switch` numbers for Bloomberg; keeping the current card is `NO_CHANGE` with one call; a disagreement is shown, not corrected; a can't-work card is flagged and recovers nothing; gemma3 and rules fallbacks; every payment returns a complete recommendation |
-| `tests/test_api.py` | `GET /payments` shape, `POST /recommend` stores the result, unknown id 404, Liquidity Guard still 423 |
+| `tests/test_api.py` | `GET /payments` shape, `POST /recommend` stores the result, reset clears it, unknown id 404, Liquidity Guard still 423 |
 
 Against the real model, with the app running:
 

@@ -653,6 +653,7 @@ Interactive docs: http://localhost:8000/docs
 | GET | `/api/disputes/cases/{case_id}` | Poll case status | DisputeCase / 404 |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package, inline (`?download=true` for attachment) | `application/pdf` / 404 until ready |
 | GET | `/api/card-optimizer/payments` | `{cards, payments, recommendations}`: the portfolio, every payment's analysis (normalised transaction, corridor, signals, tags, current fee, per-card options, rule answer) and recommendations made so far | JSON |
+| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (Reset demo) | `{"cleared": n}` |
 | POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for the reason code and card (gemma3, then rules, as fallbacks); validated against the rule engine, savings computed by the engine | Recommendation JSON / 404 |
 | GET, POST | `/api/liquidity-guard/*` | Locked module | `423 {"locked": true, "detail": "…"}` |
 

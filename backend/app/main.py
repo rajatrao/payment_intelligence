@@ -343,9 +343,17 @@ async def card_optimizer_payments():
     return {"cards": CARD_PORTFOLIO, "payments": all_analyses(), "recommendations": RECOMMENDATIONS}
 
 
+@app.delete("/api/card-optimizer/recommendations")
+async def card_optimizer_reset():
+    """Clear every recommendation so the demo can be run again."""
+    cleared = len(RECOMMENDATIONS)
+    RECOMMENDATIONS.clear()
+    return {"cleared": cleared}
+
+
 @app.post("/api/card-optimizer/payments/{payment_id}/recommend")
 async def card_optimizer_recommend(payment_id: str):
-    """Ask gemma3 (structured JSON) for the routing action and reason code; falls back to the rule engine."""
+    """Ask the decision model (nimble) for the card and reason code; falls back to gemma3, then the rule engine."""
     analysis = get_analysis(payment_id)
     if not analysis:
         raise HTTPException(404, "Payment not found")
