@@ -7,3 +7,4 @@ __pycache__/
 .DS_Store
 scripts/card_decisions.json
 scripts/liquidity_decisions.json
+scripts/horizon_forecast.json

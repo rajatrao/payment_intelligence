@@ -10,7 +10,7 @@ The product has three modules, all live.
 | --- | --- | --- |
 | **Auto-Dispute Concierge** | Matches uploaded evidence to a card transaction and generates a legal chargeback package | **Live** |
 | **Card Optimizer** | Recommends which corporate card to route a cross-border payment through, to clear SCA challenges and cut FX fees | **Live** |
-| **Liquidity Guard** | Flags variable usage-based liabilities (AWS, GCP, Meta Ads) before they auto-debit and forecasts each account's cash low point | **Live** |
+| **Liquidity Guard** | Flags variable usage-based liabilities (AWS, GCP, Meta Ads) before they auto-debit and forecasts each account's cash low point; forecasts a 30-day P10/P50/P90 cash corridor with Timestral | **Live** |
 
 For the full blueprint (diagrams, data schemas, request flow, algorithms, API and configuration), see
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. The Card Optimizer and the Liquidity Guard, with their decision-API
@@ -141,6 +141,19 @@ Before classification the forecast only counts what has been billed so far, and 
 Classifying the bills shows the usage lines will keep growing to the end of the cycle: the card settlement account
 drops below its buffer on 3 Nov and the marketing account on 6 Nov, while the operating account stays safe.
 
+That is the **Tactical Ledger Guard** view. The **Strategic Horizon Engine** view forecasts the operating reserve
+30 days ahead:
+
+1. **History and calendar.** 180 days of end-of-day balances (bi-weekly payroll, noisy card settlement inflows,
+   rent, tax and seasonal lulls) and a calendar of known-future covariates: payroll days, month start and end,
+   weekends and lulls.
+2. **Timestral.** Mistral's time-series model (`mistralai/Timestral-209M`) runs inside the backend on CPU and
+   returns quantiles for each of the next 30 days. The 10th, 50th and 90th percentiles form an 80% safety corridor.
+3. **Floor and sweep.** If P10 falls below the 50,000 USD corporate floor, an alert names the day and recommends a
+   pre-emptive sweep from the treasury money market, sized from the P10 shortfall. Executing it is simulated.
+4. **Fallback.** If Timestral isn't installed, is still loading or is too slow, a statistical model computes the
+   corridor instead, and the view says so in an amber banner.
+
 ## Local setup
 
 Everything runs on your machine. The app runs in Docker; Ollama runs natively on the host so it can use your GPU
@@ -188,6 +201,11 @@ The defaults work as-is: the backend container reaches Ollama on your host at
 ```bash
 docker compose up --build
 ```
+
+The first build installs Timestral with CPU torch (a few hundred MB), and on first start the backend downloads the
+`mistralai/Timestral-209M` weights from Hugging Face into the `hf-cache` volume in the background. Until they are
+loaded, the Strategic Horizon view uses its statistical fallback and says so; `GET /api/health` shows
+`forecast.status`. To build without Timestral, set `WITH_TIMESTRAL=false` in `.env`.
 
 | URL | What |
 | --- | --- |
@@ -250,6 +268,10 @@ back to the embedding alone, and the package is built with a clearly labelled te
     classify that account's bills; its donut fills in and grows as each one is classified. Do the same for each
     account: Meta Ads and AWS are flagged as spikes, card settlement falls below its buffer on 3 Nov and marketing
     on 6 Nov, while the operating account stays safe. Click **Reset** to start again.
+11. Switch to **Strategic Horizon Engine**. The chart shows the last 60 days of the reserve, then the P50 median
+    inside the amber P10 to P90 corridor, against the red 50,000 USD floor. Hover a day for its three values. The
+    alert names the day P10 breaches the floor; click **Execute AI Recommended Pre-Emptive Sweep** and the corridor
+    lifts above it from the sweep date. Check the card header: it names Timestral, or shows the fallback banner.
 
 ## Configuration
 
@@ -262,6 +284,9 @@ Copy `.env.example` to `.env` to override anything. The main settings:
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` (the only model used for matching; keep an image-capable tag: latest/`:740m` or `:440m`) |
 | `OLLAMA_NIMBLE_PATH` | `/v1/systemone` (Ollama's decision API, used by the Card Optimizer and the Liquidity Guard) |
 | `OLLAMA_DECISION_MODEL` | `nimble` (decision model; if missing, gemma3 structured outputs are used instead) |
+| `WITH_TIMESTRAL` | `true` (build arg: install Timestral and CPU torch in the backend image; `false` builds without it and the forecast uses its fallback) |
+| `FORECAST_MODEL` | `mistralai/Timestral-209M` (Strategic Horizon forecast; weights cached on the `hf-cache` volume) |
+| `FORECAST_TIMEOUT_SECONDS` | `20` (slower than this, the forecast uses the statistical fallback) |
 | `ALLOW_OFFLINE_FALLBACK` | `true` (letter only: template letter if gemma3 is missing) |
 | `CHROMA_DIR` | `/data/chroma` in Docker (named volume `chroma-data`); `/tmp/payment_intelligence/chroma` without Docker |
 
@@ -278,13 +303,15 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 ├── backend/                    Python 3.12 · FastAPI
 │   ├── Dockerfile              python:3.12-slim
 │   ├── requirements.txt
+│   ├── requirements-forecast.txt   Timestral and CPU torch (installed in the image by default)
 │   └── app/
 │       ├── main.py             routes, in-memory case store, async pipeline
 │       ├── config.py           env-driven settings
-│       ├── data/transactions/  mock transaction files: disputes, cross_border, recurring
+│       ├── data/transactions/  mock transaction files: disputes, cross_border, recurring, ledger
 │       └── services/           extraction, ollama_client, vector_store (Chroma), matching, letter,
 │                               pdf_builder, samples, corridor (card engine), card_optimizer (decision model),
-│                               liquidity (forecast engine), liquidity_guard (line classification)
+│                               liquidity (forecast engine), liquidity_guard (line classification),
+│                               horizon (Timestral 30-day forecast, fallback, sweep)
 └── frontend/                   React 18 · Vite · Tailwind CSS 3
     ├── Dockerfile              node build → nginx runtime
     ├── nginx.conf              serves the SPA, proxies /api to the backend
@@ -292,7 +319,7 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
         ├── App.jsx             tab registry and routing
         ├── api.js              backend client
         ├── components/         Header, LockWall, Donut, Dropzone, PipelineStages, MatchPanel, Icons
-        └── modules/            AutoDisputeConcierge, CardOptimizer, LiquidityGuard
+        └── modules/            AutoDisputeConcierge, CardOptimizer, LiquidityGuard, StrategicHorizon
 ```
 
 ## API at a glance
@@ -314,6 +341,9 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | GET | `/api/liquidity-guard/bills` | Upcoming bills with line forecasts, the cash timeline, totals and classifications so far |
 | POST | `/api/liquidity-guard/bills/{id}/classify` | Ask the decision model which lines are variable usage-based (checked against the rule) |
 | DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (the **Reset** button) |
+| GET | `/api/liquidity-guard/forecast` | 30-day P10/P50/P90 corridor, floor breach and recommended sweep (also at `/api/liquidity/forecast`) |
+| POST | `/api/liquidity-guard/forecast/sweep` | Execute the recommended pre-emptive sweep (simulated) |
+| DELETE | `/api/liquidity-guard/forecast` | Drop the sweep and the cached forecast (the Strategic Horizon **Reset** button) |
 
 ## Local development without Docker
 
@@ -324,6 +354,7 @@ Use this for hot reload while editing code. Ollama setup (steps 1 and 2 above) i
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-forecast.txt   # optional: Timestral for the Strategic Horizon forecast
 OLLAMA_BASE_URL=http://localhost:11434 uvicorn app.main:app --reload
 
 # Frontend, in another terminal (needs Node 18+): http://localhost:5173, proxies /api to :8000
@@ -340,6 +371,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q          # no Ollama needed: model calls are faked
 python3 ../scripts/check_card_decisions.py        # with the app running: Card Optimizer on the real models
 python3 ../scripts/check_liquidity_decisions.py   # with the app running: Liquidity Guard on the real models
+python3 ../scripts/check_horizon.py               # with the app running: Strategic Horizon on Timestral
 ```
 
 ## Current limitations

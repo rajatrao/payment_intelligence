@@ -9,6 +9,7 @@ Modules:
 import asyncio
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -30,11 +31,27 @@ from app.services.corridor import all_analyses, get_analysis
 from app.data.transactions.cross_border import CARD_PORTFOLIO
 from app.services import liquidity
 from app.services.liquidity_guard import classify, flat
+from app.services import horizon
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("api")
 
-app = FastAPI(title="Payment Intelligence", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app):
+    # Load Timestral in the background at startup, so its first-run weight download doesn't land on a demo click.
+    async def warm():
+        try:
+            await asyncio.to_thread(horizon.load_model)
+            log.info("Timestral loaded: %s", settings.forecast_model)
+        except horizon.ForecastUnavailable as exc:
+            log.warning("Timestral unavailable, the forecast will use the statistical fallback: %s", exc)
+
+    task = asyncio.create_task(warm())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="Payment Intelligence", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
@@ -64,8 +81,9 @@ def _pdf_response(data: bytes, filename: str, download: bool) -> Response:
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "ollama": await ollama_status(), "vector_store": vector_store.stats(),
+            "forecast": horizon.model_status(),
             "config": {"llm_model": settings.llm_model, "embed_model": settings.embed_model,
-                       "decision_model": settings.decision_model,
+                       "decision_model": settings.decision_model, "forecast_model": settings.forecast_model,
                        "nimble_path": settings.nimble_path, "offline_fallback": settings.allow_offline_fallback}}
 
 
@@ -388,6 +406,50 @@ async def liquidity_reset():
     """Clear every classification so the demo can be run again."""
     cleared = len(CLASSIFICATIONS)
     CLASSIFICATIONS.clear()
+    return {"cleared": cleared}
+
+
+# ---------------------------------------------------------------- liquidity guard: strategic horizon
+
+# The engine's quantiles are computed once and reused until reset; an executed sweep is layered on top.
+HORIZON: dict = {"raw": None, "sweep": None}
+_HORIZON_LOCK = asyncio.Lock()
+
+
+async def _horizon_raw() -> dict:
+    async with _HORIZON_LOCK:
+        if HORIZON["raw"] is not None:
+            return HORIZON["raw"]
+        raw = await horizon.run_forecast()
+        # A fallback answer is not cached, so the next request tries Timestral again (for example once it has loaded).
+        if raw["source"] == "forecast model":
+            HORIZON["raw"] = raw
+        return raw
+
+
+@app.get("/api/liquidity-guard/forecast")
+@app.get("/api/liquidity/forecast")
+async def liquidity_forecast():
+    """30-day P10/P50/P90 cash corridor for the operating reserve (Timestral, or the statistical fallback)."""
+    return horizon.build(await _horizon_raw(), HORIZON["sweep"])
+
+
+@app.post("/api/liquidity-guard/forecast/sweep")
+async def liquidity_sweep():
+    """Execute the recommended pre-emptive sweep (simulated: recorded and added to the forecast)."""
+    raw = await _horizon_raw()
+    plan = horizon.plan_sweep(raw)
+    if plan is None:
+        raise HTTPException(409, "The P10 forecast stays above the floor; no sweep is needed.")
+    HORIZON["sweep"] = {**plan, "executed_at": datetime.now(timezone.utc).isoformat(), "simulated": True}
+    return horizon.build(raw, HORIZON["sweep"])
+
+
+@app.delete("/api/liquidity-guard/forecast")
+async def liquidity_forecast_reset():
+    """Drop the executed sweep and the cached forecast, so the next request runs the engine again."""
+    cleared = {"sweep": HORIZON["sweep"] is not None, "forecast": HORIZON["raw"] is not None}
+    HORIZON.update(raw=None, sweep=None)
     return {"cleared": cleared}
 
 

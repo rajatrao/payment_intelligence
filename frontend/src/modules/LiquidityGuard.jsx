@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import Donut, { SERIES } from "../components/Donut.jsx";
 import { SparkIcon, Spinner } from "../components/Icons.jsx";
+import StrategicHorizon from "./StrategicHorizon.jsx";
 
 const usd = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v || 0);
 const usd0 = (v) =>
@@ -372,7 +373,7 @@ function CashTimeline({ forecast, account, selectedId }) {
   );
 }
 
-export default function LiquidityGuard() {
+function TacticalLedgerGuard() {
   const [data, setData] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [accountId, setAccountId] = useState(null);
@@ -522,6 +523,38 @@ export default function LiquidityGuard() {
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+const VIEWS = [
+  { id: "tactical", label: "Tactical Ledger Guard", hint: "bills, accounts, cash timeline" },
+  { id: "strategic", label: "Strategic Horizon Engine", hint: "30-day probabilistic forecast" },
+];
+
+export default function LiquidityGuard() {
+  const [view, setView] = useState("tactical");
+  return (
+    <div className="space-y-4">
+      <div role="tablist" className="inline-flex rounded-md border border-slate-200 bg-white p-0.5 text-xs font-medium">
+        {VIEWS.map((v) => (
+          <button
+            key={v.id}
+            role="tab"
+            aria-selected={view === v.id}
+            onClick={() => setView(v.id)}
+            className={`rounded px-3 py-1.5 transition ${
+              view === v.id ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            {v.label}
+            <span className={`ml-2 hidden text-[10px] sm:inline ${view === v.id ? "text-slate-300" : "text-slate-400"}`}>
+              {v.hint}
+            </span>
+          </button>
+        ))}
+      </div>
+      {view === "tactical" ? <TacticalLedgerGuard /> : <StrategicHorizon />}
     </div>
   );
 }

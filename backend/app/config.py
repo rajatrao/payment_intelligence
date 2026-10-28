@@ -29,6 +29,11 @@ class Settings:
     nimble_path: str = os.getenv("OLLAMA_NIMBLE_PATH", "/v1/systemone")
     decision_model: str = os.getenv("OLLAMA_DECISION_MODEL", "nimble")
 
+    # Liquidity Guard Strategic Horizon: Timestral (Mistral's time-series model) forecasts the 30-day cash corridor.
+    # If it is unavailable or slower than the timeout, a statistical model computes the quantiles and says so.
+    forecast_model: str = os.getenv("FORECAST_MODEL", "mistralai/Timestral-209M")
+    forecast_timeout_s: float = float(os.getenv("FORECAST_TIMEOUT_SECONDS", "20"))
+
     request_timeout_s: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
     # Letter generation only: "false" fails the case instead of using the template letter.
     allow_offline_fallback: bool = os.getenv("ALLOW_OFFLINE_FALLBACK", "true").lower() != "false"
