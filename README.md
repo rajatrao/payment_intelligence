@@ -52,7 +52,7 @@ and PDF for one matched transaction, which you review before deciding to downloa
 
 1. **Evidence in.** Drop a PDF, click **Use Sample PDF** to load a pre-built invoice from EUROSITES ADVERTISING
    LTD (USD 18,450.00, 12/09/2026) that backs transaction `txn_9f3a71c2`, or load any document from the
-   **sample evidence library** (see below).
+   **sample evidence library** (six PDFs and two JPEG photos, including decoys that match nothing).
 2. **Read.** A PDF's text layer is read with pypdf and split into chunks. **gemma3:4b** (vision-capable) reads the
    merchant, total amount, date, reference and a one-line description, from the PDF text or straight from a photo.
    For PDFs a value only counts if it also appears in the pypdf text, so the model can't invent a number. The
@@ -77,25 +77,6 @@ and PDF for one matched transaction, which you review before deciding to downloa
 
 Matching is a single request. Building runs as a background task; the UI polls the case and shows the letter and
 PDF stages live.
-
-### Sample evidence library
-
-Eight generated documents (six PDFs and two JPEG "photos") show the matcher working in both directions. Load one
-and click **Match evidence**, or select a transaction and use **Find evidence for this transaction** to search them
-all.
-
-| Sample | Type | Backs transaction |
-| --- | --- | --- |
-| EUROSITES Q4 campaign invoice | Invoice | `txn_9f3a71c2` EUROSITES ADV*LDN, USD 18,450.00 |
-| Northwind SaaStr booth receipt | Receipt | `txn_51be08d4` SQ *NORTHWIND EVENTS, USD 7,200.00 |
-| Datadog October invoice | Invoice | `txn_e4492fa0` DATADOG INC, USD 3,880.00 |
-| Lumen Studio statement of work | Contract | `txn_2a6d93e7` PAYPAL *LUMENSTUDIO, USD 4,600.00 |
-| EUROSITES Q2 invoice (old job) | Decoy | None: same merchant, different job, amount and date |
-| Clerkenwell Hotel folio | Decoy | None: same card and week, unrelated spend |
-| Northwind booth receipt (photo) | Receipt, JPEG | `txn_51be08d4`, matched as an image |
-| London taxi receipt (photo) | Decoy, JPEG | None: same card, unrelated spend |
-
-The Amazon transaction (`txn_c07e2b19`, card-absent fraud) deliberately has no supporting document.
 
 ## How the Card Optimizer works
 
@@ -237,60 +218,6 @@ loaded, the Strategic Horizon view uses its statistical fallback and says so; `G
   `embed_model` filled in (and `decision_model` for the Card Optimizer).
 - Select a transaction and click **Search** under **Find evidence for this transaction**: the matching document
   should rank first.
-
-### Troubleshooting
-
-| Symptom | Fix |
-| --- | --- |
-| Badge red: "Ollama unreachable" | Make sure Ollama is running (`curl http://localhost:11434/api/tags`). If that works but the container still can't reach it, make Ollama listen on all interfaces and restart it. macOS: `launchctl setenv OLLAMA_HOST "0.0.0.0"`, then quit and reopen the Ollama app. Linux: `sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0"` under `[Service]`, then `sudo systemctl restart ollama`. |
-| Linux: `host.docker.internal` doesn't resolve | Already handled by `extra_hosts: host-gateway` in `docker-compose.yml`; make sure you're on Docker 20.10+. |
-| Every photo scores the same, or "Ollama did not read the image" | Update Ollama, check `ollama show embeddinggemma-2` lists `vision`, then run `python3 scripts/check_image_embeddings.py` |
-| `ollama pull` says "requires a newer version of Ollama" | Update Ollama (download the latest from ollama.com, or `brew upgrade ollama`), restart it, then pull again |
-| Case fails: "Embedding model 'embeddinggemma-2' is not installed" | `ollama pull embeddinggemma-2` |
-| JPEG case fails with an Ollama error | Check you're using an image-capable tag (default, `:740m` or `:440m`), and update Ollama. |
-| Package says "Template letter", or the match panel shows no "read" values | gemma3 isn't installed: `ollama pull gemma3:4b`. Set `ALLOW_OFFLINE_FALLBACK=false` to fail instead of using the template letter. |
-| Matching or letters are slow or time out | The first read of each file takes a few seconds on gemma3:4b; later matches use the cache. Raise `OLLAMA_TIMEOUT_SECONDS` in `.env` on slower machines. |
-| Card Optimizer shows "gemma3:4b via /api/chat" instead of "nimble via /v1/systemone" | The note under the recommendation says why. Update Ollama to 0.35+ and run `ollama pull nimble`. |
-| Port 3000 or 8000 already in use | Change the left side of the `ports` mappings in `docker-compose.yml`. |
-
-Matching requires EmbeddingGemma 2: if Ollama or the model is unavailable, the case fails with a clear error rather
-than substituting another matcher. If only gemma3 is missing, PDFs still match on exact text checks, photos fall
-back to the embedding alone, and the package is built with a clearly labelled template letter.
-
-### Try it yourself
-
-1. Open the **Auto-Dispute Concierge** tab.
-2. Load the **London hotel folio** decoy and click **Match evidence**: every transaction scores WEAK and the
-   file is flagged as matching no disputed transaction. Try the taxi photo or the EUROSITES Q2 invoice too.
-3. Click **Use Sample PDF**, then **Match evidence**. The EUROSITES transaction ranks first and is selected.
-4. Click **Build evidence package**. Read the letter in the preview, switch to **Package PDF**, then click
-   **Download Legal Chargeback Package (PDF)** or **Discard**.
-5. Load another document (for example the Datadog invoice or the Northwind photo) and match again. For the photo,
-   the match panel shows the amount and date gemma3 read from the image.
-6. Select **SQ \*NORTHWIND EVENTS** in the queue and click **Search** under **Find evidence for this transaction**:
-   Chroma shortlists stored files, gemma3 verifies them, and the receipt and its photo rank first. Click **Use** to
-   load one.
-7. Open the **Card Optimizer** tab. Select the declined **OVH** payment and click **Recommend route**: it should
-   come back as `SCA_BYPASS_CORRIDOR` on the Irish lodged card, with the decision probabilities and the payment
-   amount recovered.
-8. The four donuts at the top break down what is blocked or pending and the FX and cross-border fees paid, by
-   payment. Click **Analyze all payments** to fill in the whole queue: the **Recovered** and **Fees saved** donuts
-   fill in payment by payment, with the grey slice showing what is not recovered or saved yet. The card options
-   table shows why each card is or isn't eligible. Click **Reset** to clear the recommendations and start again.
-9. Open the **Liquidity Guard** tab. Every bill is marked "not classified", the donut amounts are starred and all three
-   accounts stay above their buffers. Hover any Forecast value to see its line-by-line breakdown: before
-   classification it is just what is billed so far. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
-   Bedrock and support lines as variable and the savings plan as fixed, with a probability for each.
-10. Click an account card: the bill list and cash timeline show only that account. Click **Classify all bills** to
-    classify that account's bills; its donut fills in and grows as each one is classified. Do the same for each
-    account: Meta Ads and AWS are flagged as spikes, card settlement falls below its buffer on 3 Nov and marketing
-    on 6 Nov, while the operating account stays safe. Click **Reset** to start again.
-11. Switch to **Strategic Horizon Engine** in the tabs on the left; the same account stays selected. Each account
-    card shows a sparkline of its corridor against its floor. Card settlement and marketing breach (3 and 6 Nov,
-    the same accounts as the Tactical view) while operating stays clear. The chart shows the last 60 days of the
-    account, then the P50 median inside the amber P10 to P90 corridor, against the red floor. Hover a day for its
-    three values and what is scheduled. Click **Execute AI Recommended Pre-Emptive Sweep** and the corridor lifts
-    above the floor from the sweep date. Check the card header: it names Timestral, or shows the fallback banner.
 
 ## Configuration
 
