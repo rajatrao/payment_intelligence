@@ -54,7 +54,8 @@ sequenceDiagram
     API-->>UI: classification + updated forecast
 ```
 
-One decision call per bill. **Classify all bills** in the UI calls the classify route for each bill in turn.
+One decision call per bill. Selecting an account in the UI filters the bill list and cash timeline to that
+account, and **Classify all bills** calls the classify route for each of that account's bills in turn.
 
 ## 3. Bills and the forecast engine (deterministic)
 

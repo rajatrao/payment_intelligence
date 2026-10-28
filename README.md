@@ -244,9 +244,10 @@ back to the embedding alone, and the package is built with a clearly labelled te
 9. Open the **Liquidity Guard** tab. Every bill is marked "not classified", the donuts are faded and all three
    accounts stay above their buffers. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
    Bedrock and support lines as variable and the savings plan as fixed, with a probability for each.
-10. Click **Classify all bills**. Each account's donut fills in and grows as its bills are classified, Meta Ads and
-    AWS are flagged as spikes, and the banner turns red: card settlement falls below its buffer on 3 Nov and
-    marketing on 6 Nov. Click an account card to see its cash timeline. Click **Reset** to start again.
+10. Click an account card: the bill list and cash timeline show only that account. Click **Classify all bills** to
+    classify that account's bills; its donut fills in and grows as each one is classified. Do the same for each
+    account: Meta Ads and AWS are flagged as spikes, card settlement falls below its buffer on 3 Nov and marketing
+    on 6 Nov, while the operating account stays safe. Click **Reset** to start again.
 
 ## Configuration
 

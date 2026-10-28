@@ -127,11 +127,11 @@ function Stat({ label, value, tone = "" }) {
   );
 }
 
-function BillQueue({ bills, accounts, selectedId, onSelect }) {
+function BillQueue({ bills, account, selectedId, onSelect }) {
   return (
     <div className="card">
       <div className="card-header">
-        <span className="label">Upcoming auto-debits</span>
+        <span className="label">Upcoming auto-debits · {account.name}</span>
         <span className="text-[11px] text-slate-500">{bills.length} bills</span>
       </div>
       <div className="overflow-x-auto">
@@ -139,7 +139,6 @@ function BillQueue({ bills, accounts, selectedId, onSelect }) {
           <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
             <tr>
               <th className="px-3 py-1.5 font-semibold">Vendor</th>
-              <th className="px-2 py-1.5 font-semibold">Account</th>
               <th className="px-2 py-1.5 font-semibold">Debit</th>
               <th className="px-2 py-1.5 text-right font-semibold">3-cycle avg</th>
               <th className="px-2 py-1.5 text-right font-semibold">Forecast</th>
@@ -157,7 +156,6 @@ function BillQueue({ bills, accounts, selectedId, onSelect }) {
                   className={`cursor-pointer border-t border-slate-100 ${selected ? "bg-slate-900 text-white" : "hover:bg-slate-50"}`}
                 >
                   <td className="max-w-[160px] truncate px-3 py-1.5 font-mono">{b.descriptor}</td>
-                  <td className="whitespace-nowrap px-2 py-1.5">{short(accounts.find((a) => a.id === b.account_id))}</td>
                   <td className="whitespace-nowrap px-2 py-1.5 font-mono">{day(b.debit_date)}</td>
                   <td className="px-2 py-1.5 text-right font-mono tabular-nums">{usd0(b.avg3)}</td>
                   <td className="px-2 py-1.5 text-right font-mono tabular-nums">
@@ -390,10 +388,18 @@ export default function LiquidityGuard() {
     setAccountId(data.forecast.bills.find((b) => b.id === id)?.account_id);
   };
 
+  const selectAccount = (id) => {
+    setAccountId(id);
+    const first = data.forecast.accounts.find((a) => a.id === id)?.bill_ids[0];
+    if (first) setSelectedId(first);
+  };
+
+  // Classifies only the bills that debit the selected account.
   const classifyAll = async () => {
-    for (const b of data.forecast.bills) {
-      selectBill(b.id);
-      await classify(b.id);
+    const acct = data.forecast.accounts.find((a) => a.id === accountId) || data.forecast.accounts[0];
+    for (const id of acct.bill_ids) {
+      selectBill(id);
+      await classify(id);
     }
   };
 
@@ -413,6 +419,7 @@ export default function LiquidityGuard() {
   const t = forecast.totals;
   const bill = forecast.bills.find((b) => b.id === selectedId);
   const account = forecast.accounts.find((a) => a.id === accountId) || forecast.accounts[0];
+  const accountBills = forecast.bills.filter((b) => b.account_id === account.id);
   const breached = forecast.accounts.filter((a) => a.first_breach).sort((a, b) => (a.first_breach < b.first_breach ? -1 : 1));
 
   return (
@@ -446,7 +453,7 @@ export default function LiquidityGuard() {
           {breached
             .map((a) => `${short(a)} drops below its ${usd0(a.minimum_buffer)} buffer on ${day(a.first_breach)}`)
             .join("; ")}
-          {t.unclassified_bills ? ", even before all usage is forecast" : ""}.
+          .{t.unclassified_bills ? ` ${t.unclassified_bills} bills are still not classified.` : ""}
         </div>
       ) : t.unclassified_bills ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
@@ -466,17 +473,17 @@ export default function LiquidityGuard() {
             account={a}
             bills={forecast.bills}
             selected={a.id === account.id}
-            onSelect={() => setAccountId(a.id)}
+            onSelect={() => selectAccount(a.id)}
           />
         ))}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,6fr)_minmax(0,6fr)]">
         <section className="space-y-4">
-          <BillQueue bills={forecast.bills} accounts={forecast.accounts} selectedId={selectedId} onSelect={selectBill} />
+          <BillQueue bills={accountBills} account={account} selectedId={selectedId} onSelect={selectBill} />
           <div className="flex gap-2">
             <button className="btn-secondary flex-1" onClick={classifyAll} disabled={!!busy}>
-              {busy ? <Spinner /> : <SparkIcon />} Classify all bills
+              {busy ? <Spinner /> : <SparkIcon />} Classify all bills · {short(account)}
             </button>
             <button className="btn-secondary" onClick={reset} disabled={!!busy || !Object.keys(classifications).length}>
               Reset
