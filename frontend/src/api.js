@@ -42,5 +42,10 @@ export const api = {
     fetch(`${BASE}/api/card-optimizer/payments/${paymentId}/recommend`, { method: "POST" }).then(json),
   resetRecommendations: () =>
     fetch(`${BASE}/api/card-optimizer/recommendations`, { method: "DELETE" }).then(json),
+  liquidityBills: () => fetch(`${BASE}/api/liquidity-guard/bills`).then(json),
+  classifyBill: (billId) =>
+    fetch(`${BASE}/api/liquidity-guard/bills/${billId}/classify`, { method: "POST" }).then(json),
+  resetClassifications: () =>
+    fetch(`${BASE}/api/liquidity-guard/classifications`, { method: "DELETE" }).then(json),
   packageUrl: (path, download = false) => `${BASE}${path}${download ? "?download=true" : ""}`,
 };

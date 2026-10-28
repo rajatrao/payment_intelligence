@@ -2,7 +2,7 @@
 
 - disputes.py      Auto-Dispute Concierge (live)
 - cross_border.py  Card Optimizer (live)
-- recurring.py     Liquidity Guard (locked)
+- recurring.py     Liquidity Guard (live)
 """
 
 from app.data.transactions.cross_border import CROSS_BORDER_TRANSACTIONS

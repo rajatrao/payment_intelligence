@@ -1,7 +1,7 @@
 # Architecture Blueprint
 
-This document describes the system as built for the **Auto-Dispute Concierge** and **Card Optimizer** modules,
-plus the extension points reserved for the **Liquidity Guard** module. Diagrams are Mermaid and render on GitHub.
+This document describes the system as built for the **Auto-Dispute Concierge**, **Card Optimizer** and
+**Liquidity Guard** modules. Diagrams are Mermaid and render on GitHub.
 
 Contents
 
@@ -19,7 +19,8 @@ Contents
 12. [Configuration](#12-configuration)
 13. [Failure modes and fallbacks](#13-failure-modes-and-fallbacks)
 14. [Card Optimizer and module gating](#14-card-optimizer-and-module-gating)
-15. [Known limitations and review checklist](#15-known-limitations-and-review-checklist)
+15. [Liquidity Guard](#15-liquidity-guard)
+16. [Known limitations and review checklist](#16-known-limitations-and-review-checklist)
 
 ---
 
@@ -70,7 +71,7 @@ backend/app/
 │   └── transactions/       Mock transaction files, named by feature
 │       ├── disputes.py         Auto-Dispute Concierge dataset (live)
 │       ├── cross_border.py     Card Optimizer dataset and card portfolio (live)
-│       └── recurring.py        Liquidity Guard dataset (provisioned, unused until unlocked)
+│       └── recurring.py        Liquidity Guard dataset: upcoming bills, operating account, cash flows (live)
 └── services/
     ├── extraction.py       File-type detection, PDF text layer (pypdf, no OCR), chunking
     ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON, nimble decisions
@@ -81,13 +82,15 @@ backend/app/
     ├── pdf_builder.py      ReportLab: EUROSITES invoice + legal chargeback package, Exhibit A merge (pypdf)
     ├── samples.py          Sample evidence library: 5 documents that back a transaction, 3 decoys
     ├── corridor.py         Card Optimizer engine: normalise, corridor, friction, per-card fees, rule recommendation
-    └── card_optimizer.py   Decision-model recommendation (nimble), gemma3 and rule fallbacks
+    ├── card_optimizer.py   Decision-model recommendation (nimble), gemma3 and rule fallbacks
+    ├── liquidity.py        Liquidity Guard engine: line rule, run-rate forecast, cash timeline, buffer breach
+    └── liquidity_guard.py  Decision-model line classification (nimble noul), gemma3 and rule fallbacks
 ```
 
 ```mermaid
 flowchart TB
     subgraph api["main.py (FastAPI)"]
-        routes["Routes<br/>/api/health · /api/disputes/* · /api/card-optimizer/* · /api/liquidity-guard/* (423)"]
+        routes["Routes<br/>/api/health · /api/disputes/* · /api/card-optimizer/* · /api/liquidity-guard/*"]
         pipeline["run_pipeline()<br/>asyncio task per case"]
         store[("EVIDENCE · DISPUTES · PACKAGES<br/>in-memory dicts")]
     end
@@ -119,6 +122,10 @@ flowchart TB
     optimizer["card_optimizer.py"]
     routes -- "card-optimizer" --> corridor --> data
     routes -- "recommend" --> optimizer --> ollama
+    liquidity["liquidity.py"]
+    guard["liquidity_guard.py"]
+    routes -- "liquidity-guard" --> liquidity --> data
+    routes -- "classify" --> guard --> ollama
 ```
 
 Concurrency notes
@@ -138,11 +145,11 @@ Concurrency notes
 ```
 frontend/src/
 ├── main.jsx / index.css        Entry, Tailwind layers (card, tag-green/amber/red, btn)
-├── App.jsx                     MODULES registry + active-tab state; mounts module or LockWall
+├── App.jsx                     MODULES registry + active-tab state; mounts the module, or LockWall if locked
 ├── api.js                      Fetch wrappers for every backend route
 ├── components/
 │   ├── Header.jsx              Brand, three tabs, live Ollama status badge (polls /api/health every 15 s)
-│   ├── LockWall.jsx            Blurred skeleton + lock overlay for Liquidity Guard
+│   ├── LockWall.jsx            Blurred skeleton + lock overlay for a locked module (none today)
 │   ├── Dropzone.jsx            Drag-and-drop / click upload, PDF (text matched) or JPEG (image matched)
 │   ├── SampleLibrary.jsx       Sample documents, Load / Download
 │   ├── EvidenceSearch.jsx      "Find evidence for this transaction": Chroma shortlist verified by gemma3
@@ -152,7 +159,8 @@ frontend/src/
 │   └── Icons.jsx               Inline SVG icons
 └── modules/
     ├── AutoDisputeConcierge.jsx   Auto-Dispute Concierge view: queue, detail, evidence, match, PDF preview
-    └── CardOptimizer.jsx          Card Optimizer view: totals, payment queue, recommendation, card options
+    ├── CardOptimizer.jsx          Card Optimizer view: totals, payment queue, recommendation, card options
+    └── LiquidityGuard.jsx         Liquidity Guard view: totals, bill queue, line classifications, cash timeline
 ```
 
 ```mermaid
@@ -160,7 +168,10 @@ flowchart TB
     App --> Header
     App -->|"active = disputes"| ADC["AutoDisputeConcierge"]
     App -->|"active = card-optimizer"| CO["CardOptimizer"]
-    App -->|"active = liquidity-guard"| LockWall
+    App -->|"active = liquidity-guard"| LG["LiquidityGuard"]
+    LG --> BQ["BillQueue"]
+    LG --> BD["BillDetail + LineRow"]
+    LG --> CT["CashTimeline"]
     CO --> PQ["PaymentQueue"]
     CO --> Rec["Recommendation"]
     CO --> Opts["CardOptions"]
@@ -497,7 +508,7 @@ document counts under `vector_store`.
 | `transactions/cross_border.py` `CROSS_BORDER_TRANSACTIONS` | 8 | Cross-border card payments: SCA soft declines (Visa 1A, Mastercard 65), a regional MCC block (05), a pending 3DS challenge and settled payments that paid FX and cross-border fees. Messy on purpose: alpha-3 countries (`DEU`, `JPN`, `CAN`), lower-case currencies, amounts as strings with separators, null memos. Kept in local currencies because FX is the point of the Card Optimizer. |
 | `transactions/cross_border.py` `CARD_PORTFOLIO` | 5 | Company cards: US Visa and Mastercard (USD), an Irish lodged virtual card (EUR, corporate exemption), a UK Visa (GBP, corporate exemption), a Singapore multi-currency card (SGD, USD, AUD, JPY, INR). Each has FX and cross-border fees in basis points. |
 | `transactions/cross_border.py` `REGIONS`, `ALPHA3`, `FX_RATES_USD` | | Country-to-region map (NA, EU, APAC), alpha-3 to alpha-2 codes, mock mid-market rates to USD. |
-| `transactions/recurring.py` `RECURRING_TRANSACTIONS` | 4 | Recurring liabilities (AWS, GCP, Meta Ads, Slack) with prior 3-month averages, mixing variable usage lines and fixed seats. |
+| `transactions/recurring.py` `RECURRING_BILLS` | 9 bills, 22 lines | October statements due to auto-debit in early November (AWS, Google Cloud, Meta Ads, Snowflake, Twilio, Datadog, Slack, Salesforce, a coworking office), captured with 27 of 31 days elapsed. Each line has its invoice text, month-to-date amount (string with separators) and last three charges. Mixes metered lines with seats, licences and commitments, including hard cases: a support plan priced as 10% of usage, on-demand hosts above a commitment, a per-number monthly fee. Also the operating account (312,000 USD, 75,000 USD minimum buffer) and two known flows (payroll, a customer receipt). |
 
 ### Sample evidence library
 
@@ -655,7 +666,9 @@ Interactive docs: http://localhost:8000/docs
 | GET | `/api/card-optimizer/payments` | `{cards, payments, recommendations}`: the portfolio, every payment's analysis (normalised transaction, corridor, signals, tags, current fee, per-card options, rule answer) and recommendations made so far | JSON |
 | DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (Reset demo) | `{"cleared": n}` |
 | POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for the reason code and card (gemma3, then rules, as fallbacks); validated against the rule engine, savings computed by the engine | Recommendation JSON / 404 |
-| GET, POST | `/api/liquidity-guard/*` | Locked module | `423 {"locked": true, "detail": "…"}` |
+| GET | `/api/liquidity-guard/bills` | `{forecast, classifications}`: every bill with per-line forecast, the cash timeline, the account, cycle and totals (debits, variable exposure, surprise, low point, first breach), and classifications made so far | JSON |
+| POST | `/api/liquidity-guard/bills/{id}/classify` | Ask the decision model which lines are variable usage-based (gemma3, then rules, as fallbacks); compared with the rule per line | `{classification, forecast}` / 404 |
+| DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (Reset demo) | `{"cleared": n}` |
 
 ## 12. Configuration
 
@@ -665,10 +678,10 @@ All settings are environment variables, read in `config.py` and passed through `
 | Variable | Default | Used by |
 | --- | --- | --- |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | All Ollama calls |
-| `OLLAMA_LLM_MODEL` | `gemma3:4b` | Field extraction (PDF text and photos), letter generation, Card Optimizer fallback |
+| `OLLAMA_LLM_MODEL` | `gemma3:4b` | Field extraction (PDF text and photos), letter generation, Card Optimizer and Liquidity Guard fallback |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` | Matching, text and image (only model used; no fallback) |
-| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Ollama's decision API (Ollama 0.35+), Card Optimizer |
-| `OLLAMA_DECISION_MODEL` | `nimble` | Decision model for the Card Optimizer |
+| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Ollama's decision API (Ollama 0.35+), Card Optimizer and Liquidity Guard |
+| `OLLAMA_DECISION_MODEL` | `nimble` | Decision model for the Card Optimizer and Liquidity Guard |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | All Ollama calls |
 | `ALLOW_OFFLINE_FALLBACK` | `true` | Letter only: `false` fails the case instead of using the template letter |
 | `CHROMA_DIR` | `/tmp/payment_intelligence/chroma` (`/data/chroma` in Docker, on the `chroma-data` volume) | Chroma vector store |
@@ -699,6 +712,10 @@ All settings are environment variables, read in `config.py` and passed through `
 | Card Optimizer: Ollama unavailable | The rule engine's answer is shown | "rules (models unavailable)" and the errors under the recommendation |
 | Card Optimizer: model picks a card the rule engine says can't clear the friction | The model's answer is still shown; no payment is counted as recovered | Amber warning naming the issue |
 | Card Optimizer: model disagrees with the rule engine | The model's answer is shown; the rule's answer is shown next to it | "Rule check: disagrees" note |
+| Liquidity Guard: no `/v1/systemone`, `nimble` not pulled, or a line missing from nimble's answers | gemma3 answers true/false per line through `/api/chat` with a JSON-schema `format`; no probabilities | "gemma3:4b via /api/chat" and a note saying why |
+| Liquidity Guard: Ollama unavailable | The keyword rule's classification is used | "rules (models unavailable)" and the errors under the bill |
+| Liquidity Guard: model disagrees with the rule on a line | The model's answer drives the forecast; the rule's view is shown on the line | "rule says fixed/variable" on the line |
+| Liquidity Guard: bill not classified yet | Forecast counts only what is billed so far | "not classified" tag, `*` on the amount, amber banner |
 
 ## 14. Card Optimizer and module gating
 
@@ -800,21 +817,54 @@ shown in the UI.
 
 ### Module gating
 
-Locking is enforced in both layers:
+All three modules are live. The gating mechanism is kept for future modules, in both layers:
 
-- **UI.** `MODULES` in `App.jsx` marks Liquidity Guard `locked`. Its tab shows a lock icon and mounts `LockWall`
+- **UI.** A module marked `locked` in `MODULES` (`App.jsx`) shows a lock icon on its tab and mounts `LockWall`
   (blurred skeleton plus overlay) with its lock message.
-- **API.** A catch-all route returns `423 Locked` for any `/api/liquidity-guard/*` path.
+- **API.** A module id listed in `LOCKS` (`main.py`) gets `423 Locked` from a catch-all route for any
+  `/api/{module}/*` path; any other unknown path is `404`.
 
-Reserved for Liquidity Guard, not wired yet:
+## 15. Liquidity Guard
 
-- The boolean classification "variable usage-based consumption line", through the decision API (a `noul` question).
-- Mock dataset in `data/transactions/recurring.py`.
+The full request and response structure is in [LIQUIDITY_GUARD.md](LIQUIDITY_GUARD.md).
 
-To unlock a module: add its service module and routes, remove its key from `LOCKS` in `main.py`, set
-`locked: false` in `App.jsx`, and mount its view.
+```mermaid
+flowchart LR
+    data["recurring.py<br/>9 bills · 22 lines"] --> bills["liquidity.bills()<br/>parse amounts · avg3 · rule"]
+    bills --> classify["liquidity_guard.classify(bill)"]
+    classify -- "one noul question per line" --> nimble["POST /v1/systemone<br/>nimble"]
+    nimble -- "probability per line, ≥ 0.5 = variable" --> store[("CLASSIFICATIONS<br/>in-memory")]
+    classify -. "404 / missing line" .-> gemma["POST /api/chat<br/>gemma3 JSON schema"]
+    classify -. "Ollama down" .-> rule["keyword rule"]
+    store --> forecast["liquidity.forecast()<br/>run-rate variable lines · timeline · buffer"]
+    bills --> forecast
+    forecast --> ui["LiquidityGuard.jsx"]
+```
 
-## 15. Known limitations and review checklist
+1. **Classify.** One decision-API request per bill. The state holds the vendor, descriptor, auto-debit date and a
+   definition of a variable usage-based consumption line. Each line is a `noul` question whose instructions are
+   the invoice text, the last three charges and the amount billed after 27 of 31 days. nimble's probability of 0.5
+   or more counts as variable. The rule answer is never sent.
+2. **Forecast.** `project()` run-rates a variable line (`mtd × 31 / 27`) and keeps a fixed or unclassified line at
+   its month-to-date amount. A variable line forecast above `SPIKE_RATIO` (1.25) × its three-cycle average is a
+   spike.
+3. **Timeline.** Bill debits and the known flows are sorted by date, outflows before inflows on the same day so
+   the low point is never understated, and applied to the opening balance. Each event records the balance after
+   it and whether that is below the 75,000 USD buffer.
+4. **Totals.** Debits, three-cycle average, variable exposure (forecast of every variable line), surprise
+   (variable forecast above average), unclassified bills, low point and first breach.
+
+| State | Debits (USD) | Low point | Breach |
+| --- | --- | --- | --- |
+| No bills classified | 147,298.30 (billed so far) | 81,791.70 on 3 Nov | none |
+| All bills classified as the rule does | 164,359.09 | 65,880.54 on 3 Nov | 3 Nov |
+
+The rule (`rule_variable` in `liquidity.py`) checks, in order: strong usage markers (on-demand, overage, above
+commitment, % of usage, billed per impression/click/request, billed hourly), then fixed markers (seats, licences,
+membership, commitment, subscription, savings plan, per month), then usage units (hours, TB, GB, tokens, credits,
+segments), then a charge history that moved more than 10%.
+
+## 16. Known limitations and review checklist
 
 Limitations
 
@@ -828,6 +878,8 @@ Limitations
 - gemma3:4b can misread a photo; photo values can't be cross-checked against a text layer.
 - Headless browsers don't render PDFs in iframes; desktop Chrome, Safari and Firefox do.
 - Card Optimizer fees, FX rates and the 10 USD threshold are mock values; recommendations are in memory.
+- Liquidity Guard bills, balance and buffer are mock values; the forecast is a straight-line run-rate (no
+  seasonality or tiered pricing); classifications are in memory.
 
 Suggested review points
 
@@ -838,3 +890,5 @@ Suggested review points
 5. The package layout (`pdf_builder.py`, `build_chargeback_package`).
 6. Whether the Card Optimizer should keep foreign-currency data.
 7. The Card Optimizer card portfolio, eligibility rules and reason-code priority (`cross_border.py`, `corridor.py`).
+8. The Liquidity Guard definition and line wording sent to nimble (`liquidity_guard.py`), and the run-rate and
+   spike threshold (`liquidity.py`).
