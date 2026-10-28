@@ -8,3 +8,13 @@ __pycache__/
 scripts/card_decisions.json
 scripts/liquidity_decisions.json
 scripts/horizon_forecast.json
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+*.log
+.vite/
+.idea/
+.vscode/

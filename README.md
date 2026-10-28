@@ -4,6 +4,12 @@ An all-in-one payment intelligence and treasury optimization dashboard for finan
 machine: a React frontend and a FastAPI backend in Docker, with local models served by Ollama. No data leaves
 the machine and there are no third-party integrations.
 
+**▶ [Watch the 5-minute demo on YouTube](https://youtu.be/bzPNRtc_JCA)**
+
+[![Payment Intelligence demo](https://img.youtube.com/vi/bzPNRtc_JCA/maxresdefault.jpg)](https://youtu.be/bzPNRtc_JCA)
+
+**Built with:** React 18 · Vite · Tailwind CSS · FastAPI · Python 3.12 · Chroma · ReportLab · Docker · Ollama
+
 The product has three modules, all live.
 
 | Module | What it does | Status |
@@ -16,6 +22,18 @@ For the full blueprint (diagrams, data schemas, request flow, algorithms, API an
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. The Card Optimizer and the Liquidity Guard, with their decision-API
 requests, are detailed in **[docs/CARD_OPTIMIZER.md](docs/CARD_OPTIMIZER.md)** and
 **[docs/LIQUIDITY_GUARD.md](docs/LIQUIDITY_GUARD.md)**.
+
+## Models used
+
+Every model runs locally and has one job, and every model answer is checked against a deterministic engine or rule
+before it reaches the screen.
+
+| Model | Served by | Used for |
+| --- | --- | --- |
+| **Gemma 3** (`gemma3:4b`) | Ollama | Auto-Dispute Concierge: reads merchant, amount, date and reference from PDFs and photos, and writes the chargeback letter |
+| **EmbeddingGemma 2** (`embeddinggemma-2`) | Ollama | Auto-Dispute Concierge: embeds PDF text and photos for evidence search and transaction matching |
+| **nimble** | Ollama decision API (`/v1/systemone`) | Card Optimizer: picks the reason code and card for each payment. Liquidity Guard: classifies each bill line as fixed or variable usage-based |
+| **Timestral** (`mistralai/Timestral-209M`) | Inside the backend, on CPU | Liquidity Guard (Strategic Horizon Engine): 30-day P10/P50/P90 cash forecast per account |
 
 ## How the Auto-Dispute Concierge works
 
@@ -241,7 +259,7 @@ Matching requires EmbeddingGemma 2: if Ollama or the model is unavailable, the c
 than substituting another matcher. If only gemma3 is missing, PDFs still match on exact text checks, photos fall
 back to the embedding alone, and the package is built with a clearly labelled template letter.
 
-### Two-minute demo
+### Try it yourself
 
 1. Open the **Auto-Dispute Concierge** tab.
 2. Load the **London hotel folio** decoy and click **Match evidence**: every transaction scores WEAK and the
@@ -381,8 +399,6 @@ python3 ../scripts/check_horizon.py               # with the app running: Strate
 
 - Dispute cases and generated PDFs live in memory and are cleared when the backend restarts; only evidence
   embeddings persist (in Chroma). There is no case database yet; the schemas are documented in [docs/ARCHITECTURE.md § 7](docs/ARCHITECTURE.md#7-data-model-and-schemas).
-- Not yet run against the real gemma3 and EmbeddingGemma 2 models or inside Docker. Development tests used a
-  stand-in Ollama server, so real scores will differ.
 - Image embedding uses `/api/embed` with `{"text": "", "image": <base64 JPEG>}` items. Ollama's model page doesn't
   document the image request format, so this needs confirming against a real Ollama install.
 - Scoring weights, the image margin (`IMAGE_MARGIN`) and thresholds are hand-tuned; re-check them on real output
@@ -397,3 +413,7 @@ python3 ../scripts/check_horizon.py               # with the app running: Strate
 - No authentication; this is a local demo.
 - Stored vectors are tagged with the embedding model name and re-embedded if `OLLAMA_EMBED_MODEL` changes. To
   wipe them, run `docker compose down -v` (removes the `chroma-data` volume).
+
+## Author
+
+Built by **Rajat Rao** ([@rajatrao](https://github.com/rajatrao)).
