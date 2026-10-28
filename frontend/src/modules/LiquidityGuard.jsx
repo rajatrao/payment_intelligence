@@ -127,9 +127,65 @@ function Stat({ label, value, tone = "" }) {
   );
 }
 
-function BillQueue({ bills, account, selectedId, onSelect }) {
+// Hover breakdown for a bill's Forecast cell: what is billed so far, and how each line is forecast.
+function ForecastBreakdown({ bill, cycle, x, y }) {
+  const runRate = `× ${cycle.days} ÷ ${cycle.days_elapsed}`;
+  return (
+    <div
+      className="pointer-events-none fixed z-50 w-[480px] rounded-md border border-slate-200 bg-white p-3 text-[11px] text-slate-700 shadow-lg"
+      style={{ left: Math.max(8, x - 480), top: y + 8 }}
+    >
+      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+        <span className="font-semibold text-slate-900">{bill.vendor}</span>
+        <span className="text-[10px] text-slate-500">
+          {cycle.days_elapsed} of {cycle.days} days billed · debits {day(bill.debit_date)}
+        </span>
+      </div>
+      <table className="w-full">
+        <thead className="text-[10px] uppercase tracking-wider text-slate-500">
+          <tr>
+            <th className="pb-1 text-left font-semibold">Line</th>
+            <th className="pb-1 text-right font-semibold">So far</th>
+            <th className="pb-1 pl-2 text-left font-semibold">Method</th>
+            <th className="pb-1 text-right font-semibold">Forecast</th>
+          </tr>
+        </thead>
+        <tbody className="font-mono tabular-nums">
+          {bill.lines.map((l) => (
+            <tr key={l.id} className="border-t border-slate-100">
+              <td className="max-w-[230px] truncate py-1 pr-2 font-sans">{l.description}</td>
+              <td className="py-1 text-right">{usd0(l.mtd)}</td>
+              <td className="whitespace-nowrap py-1 pl-2 text-[10px] text-slate-500">
+                {l.variable == null ? "not classified" : l.variable ? `variable ${runRate}` : "fixed, as billed"}
+              </td>
+              <td className={`py-1 text-right ${l.spike ? "text-red-600" : ""}`}>{usd0(l.projected)}</td>
+            </tr>
+          ))}
+          <tr className="border-t border-slate-300 font-semibold text-slate-900">
+            <td className="py-1 font-sans">Total</td>
+            <td className="py-1 text-right">{usd0(bill.billed_so_far)}</td>
+            <td />
+            <td className="py-1 text-right">{usd0(bill.projected)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div className="mt-1.5 text-[10px] text-slate-500">
+        {bill.classified
+          ? `Forecast ${usd0(bill.projected - bill.billed_so_far)} above billed so far; 3-cycle average ${usd0(bill.avg3)} (${pct(
+              bill.change_pct,
+            )}).`
+          : `Not classified yet, so the forecast is what is billed so far. Classify to run-rate the variable lines ${runRate}.`}
+      </div>
+    </div>
+  );
+}
+
+function BillQueue({ bills, account, cycle, selectedId, onSelect }) {
+  const [hover, setHover] = useState(null);
+  const hovered = hover && bills.find((b) => b.id === hover.id);
   return (
     <div className="card">
+      {hovered && <ForecastBreakdown bill={hovered} cycle={cycle} x={hover.x} y={hover.y} />}
       <div className="card-header">
         <span className="label">Upcoming auto-debits · {account.name}</span>
         <span className="text-[11px] text-slate-500">{bills.length} bills</span>
@@ -158,7 +214,14 @@ function BillQueue({ bills, account, selectedId, onSelect }) {
                   <td className="max-w-[160px] truncate px-3 py-1.5 font-mono">{b.descriptor}</td>
                   <td className="whitespace-nowrap px-2 py-1.5 font-mono">{day(b.debit_date)}</td>
                   <td className="px-2 py-1.5 text-right font-mono tabular-nums">{usd0(b.avg3)}</td>
-                  <td className="px-2 py-1.5 text-right font-mono tabular-nums">
+                  <td
+                    className="cursor-help px-2 py-1.5 text-right font-mono tabular-nums underline decoration-dotted decoration-slate-400 underline-offset-2"
+                    onMouseEnter={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setHover({ id: b.id, x: r.right, y: r.bottom });
+                    }}
+                    onMouseLeave={() => setHover(null)}
+                  >
                     {usd0(b.projected)}
                     {!b.classified && <span className={selected ? "text-slate-400" : "text-slate-400"}>*</span>}
                   </td>
@@ -187,7 +250,7 @@ function BillQueue({ bills, account, selectedId, onSelect }) {
         </table>
       </div>
       <div className="border-t border-slate-100 px-3 py-1.5 text-[10px] text-slate-500">
-        * not classified yet: shows only what is billed so far
+        * not classified yet: shows only what is billed so far. Hover a forecast for its line-by-line breakdown.
       </div>
     </div>
   );
@@ -480,7 +543,7 @@ export default function LiquidityGuard() {
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,6fr)_minmax(0,6fr)]">
         <section className="space-y-4">
-          <BillQueue bills={accountBills} account={account} selectedId={selectedId} onSelect={selectBill} />
+          <BillQueue bills={accountBills} account={account} cycle={forecast.cycle} selectedId={selectedId} onSelect={selectBill} />
           <div className="flex gap-2">
             <button className="btn-secondary flex-1" onClick={classifyAll} disabled={!!busy}>
               {busy ? <Spinner /> : <SparkIcon />} Classify all bills · {short(account)}

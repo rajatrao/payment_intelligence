@@ -55,7 +55,9 @@ sequenceDiagram
 ```
 
 One decision call per bill. Selecting an account in the UI filters the bill list and cash timeline to that
-account, and **Classify all bills** calls the classify route for each of that account's bills in turn.
+account, and **Classify all bills** calls the classify route for each of that account's bills in turn. Hovering a
+bill's Forecast value shows each line's billed-so-far amount, how it is forecast (not classified, variable × 31 ÷ 27,
+or fixed as billed) and the result.
 
 ## 3. Bills and the forecast engine (deterministic)
 

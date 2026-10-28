@@ -242,7 +242,8 @@ back to the embedding alone, and the package is built with a clearly labelled te
    recovered volume and fees saved. The card options table shows why each card is or isn't eligible. Click
    **Reset** to clear the recommendations and start again.
 9. Open the **Liquidity Guard** tab. Every bill is marked "not classified", the donuts are faded and all three
-   accounts stay above their buffers. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
+   accounts stay above their buffers. Hover any Forecast value to see its line-by-line breakdown: before
+   classification it is just what is billed so far. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
    Bedrock and support lines as variable and the savings plan as fixed, with a probability for each.
 10. Click an account card: the bill list and cash timeline show only that account. Click **Classify all bills** to
     classify that account's bills; its donut fills in and grows as each one is classified. Do the same for each
