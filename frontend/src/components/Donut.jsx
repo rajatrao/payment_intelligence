@@ -31,11 +31,10 @@ export default function Donut({ slices, label, value, size = 128, stroke = 16 })
               r={r}
               fill="none"
               stroke={s.color}
-              strokeOpacity={s.estimate ? 0.4 : 1}
               strokeWidth={stroke}
               strokeDasharray={`${Math.max(0, len - gap)} ${c}`}
               strokeDashoffset={offset}
-              style={{ transition: "stroke-dasharray 700ms ease, stroke-dashoffset 700ms ease, stroke-opacity 700ms ease" }}
+              style={{ transition: "stroke-dasharray 700ms ease, stroke-dashoffset 700ms ease" }}
             >
               <title>{`${s.label}: ${usd0(s.value)} (${total ? Math.round((s.value / total) * 100) : 0}%)${
                 s.note ? `, ${s.note}` : ""

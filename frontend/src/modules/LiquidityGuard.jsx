@@ -45,7 +45,7 @@ function AccountCard({ account, bills, selected, onSelect }) {
         <ul className="min-w-0 flex-1 space-y-1 text-[11px]">
           {slices.map((s) => (
             <li key={s.id} className="flex items-center gap-1.5">
-              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: s.color, opacity: s.estimate ? 0.4 : 1 }} />
+              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: s.color }} />
               <span className="min-w-0 flex-1 truncate text-slate-700">{s.label}</span>
               <span className="font-mono tabular-nums text-slate-900">
                 {usdK(s.value)}

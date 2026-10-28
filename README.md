@@ -242,7 +242,7 @@ back to the embedding alone, and the package is built with a clearly labelled te
    payment. Click **Analyze all payments** to fill in the whole queue: the **Recovered** and **Fees saved** donuts
    fill in payment by payment, with the grey slice showing what is not recovered or saved yet. The card options
    table shows why each card is or isn't eligible. Click **Reset** to clear the recommendations and start again.
-9. Open the **Liquidity Guard** tab. Every bill is marked "not classified", the donuts are faded and all three
+9. Open the **Liquidity Guard** tab. Every bill is marked "not classified", the donut amounts are starred and all three
    accounts stay above their buffers. Hover any Forecast value to see its line-by-line breakdown: before
    classification it is just what is billed so far. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
    Bedrock and support lines as variable and the savings plan as fixed, with a probability for each.
