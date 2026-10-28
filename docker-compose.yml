@@ -2,7 +2,10 @@ name: payment-intelligence
 
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        WITH_TIMESTRAL: ${WITH_TIMESTRAL:-true}
     environment:
       # Ollama runs on the host. host.docker.internal resolves natively on Docker Desktop (macOS/Windows);
       # the extra_hosts entry below makes it work on Linux too.
@@ -13,10 +16,15 @@ services:
       OLLAMA_DECISION_MODEL: ${OLLAMA_DECISION_MODEL:-nimble}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
       ALLOW_OFFLINE_FALLBACK: ${ALLOW_OFFLINE_FALLBACK:-true}
+      # Liquidity Guard Strategic Horizon: Timestral runs inside the backend; its weights are cached on a volume.
+      FORECAST_MODEL: ${FORECAST_MODEL:-mistralai/Timestral-209M}
+      FORECAST_TIMEOUT_SECONDS: ${FORECAST_TIMEOUT_SECONDS:-20}
+      HF_HOME: /data/hf
       # Chroma vector store for evidence embeddings, kept on a named volume across restarts.
       CHROMA_DIR: /data/chroma
     volumes:
       - chroma-data:/data/chroma
+      - hf-cache:/data/hf
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -37,3 +45,4 @@ services:
 
 volumes:
   chroma-data:
+  hf-cache:

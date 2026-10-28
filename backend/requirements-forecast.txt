@@ -1,0 +1,5 @@
+# Strategic Horizon forecast: Timestral, Mistral's time-series model, on CPU. The Docker image installs this by
+# default (build arg WITH_TIMESTRAL). Without it the forecast uses the statistical fallback, and the UI says so.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.4
+timestral @ git+https://github.com/mistralai/timestral.git

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import Donut, { SERIES } from "../components/Donut.jsx";
 import { SparkIcon, Spinner } from "../components/Icons.jsx";
+import StrategicHorizon from "./StrategicHorizon.jsx";
 
 const usd = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v || 0);
 const usd0 = (v) =>
@@ -372,10 +373,9 @@ function CashTimeline({ forecast, account, selectedId }) {
   );
 }
 
-export default function LiquidityGuard() {
+function TacticalLedgerGuard({ accountId, setAccountId }) {
   const [data, setData] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
-  const [accountId, setAccountId] = useState(null);
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
@@ -384,8 +384,9 @@ export default function LiquidityGuard() {
       .liquidityBills()
       .then((d) => {
         setData(d);
-        setSelectedId((id) => id || d.forecast.bills[0]?.id);
-        setAccountId((id) => id || d.forecast.bills[0]?.account_id);
+        const acct = accountId || d.forecast.bills[0]?.account_id;
+        setAccountId(acct);
+        setSelectedId((id) => id || d.forecast.bills.find((b) => b.account_id === acct)?.id);
       })
       .catch((e) => setError(`Could not load bills: ${e.message}`));
 
@@ -521,6 +522,46 @@ export default function LiquidityGuard() {
             billed so far); fixed lines at their billed amount. Forecasts are computed by the engine, not the model.
           </div>
         </section>
+      </div>
+    </div>
+  );
+}
+
+const VIEWS = [
+  { id: "tactical", label: "Tactical Ledger Guard", hint: "bills, accounts, cash timeline" },
+  { id: "strategic", label: "Strategic Horizon Engine", hint: "30-day probabilistic forecast" },
+];
+
+// One selected account across both views, so switching views keeps the same account in front.
+export default function LiquidityGuard() {
+  const [view, setView] = useState("tactical");
+  const [accountId, setAccountId] = useState(null);
+  return (
+    <div className="grid gap-4 md:grid-cols-[13rem_minmax(0,1fr)]">
+      <nav role="tablist" aria-orientation="vertical" className="flex gap-1 md:sticky md:top-4 md:flex-col md:self-start">
+        {VIEWS.map((v) => (
+          <button
+            key={v.id}
+            role="tab"
+            aria-selected={view === v.id}
+            onClick={() => setView(v.id)}
+            className={`flex-1 rounded-md border-l-2 px-3 py-2 text-left transition md:flex-none ${
+              view === v.id
+                ? "border-slate-900 bg-slate-100 text-slate-900"
+                : "border-transparent text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <div className={`text-xs ${view === v.id ? "font-semibold" : "font-medium"}`}>{v.label}</div>
+            <div className="mt-0.5 text-[10px] text-slate-500">{v.hint}</div>
+          </button>
+        ))}
+      </nav>
+      <div className="min-w-0">
+        {view === "tactical" ? (
+          <TacticalLedgerGuard accountId={accountId} setAccountId={setAccountId} />
+        ) : (
+          <StrategicHorizon accountId={accountId} onSelectAccount={setAccountId} />
+        )}
       </div>
     </div>
   );

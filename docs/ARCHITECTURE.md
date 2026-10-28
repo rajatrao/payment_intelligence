@@ -70,7 +70,8 @@ backend/app/
 │   └── transactions/       Mock transaction files, named by feature
 │       ├── disputes.py         Auto-Dispute Concierge dataset (live)
 │       ├── cross_border.py     Card Optimizer dataset and card portfolio (live)
-│       └── recurring.py        Liquidity Guard dataset: upcoming bills, three bank accounts, cash flows (live)
+│       ├── recurring.py        Liquidity Guard dataset: upcoming bills, three bank accounts, cash flows (live)
+│       └── ledger.py           Strategic Horizon dataset: 180-day ledgers for the three accounts and 30-day calendar covariates
 └── services/
     ├── extraction.py       File-type detection, PDF text layer (pypdf, no OCR), chunking
     ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON, nimble decisions
@@ -83,7 +84,8 @@ backend/app/
     ├── corridor.py         Card Optimizer engine: normalise, corridor, friction, per-card fees, rule recommendation
     ├── card_optimizer.py   Decision-model recommendation (nimble), gemma3 and rule fallbacks
     ├── liquidity.py        Liquidity Guard engine: line rule, run-rate forecast, cash timeline, buffer breach
-    └── liquidity_guard.py  Decision-model line classification (nimble noul), gemma3 and rule fallbacks
+    ├── liquidity_guard.py  Decision-model line classification (nimble noul), gemma3 and rule fallbacks
+    └── horizon.py          Strategic Horizon: Timestral 30-day P10/P50/P90 forecast, statistical fallback, sweep
 ```
 
 ```mermaid
@@ -125,6 +127,8 @@ flowchart TB
     guard["liquidity_guard.py"]
     routes -- "liquidity-guard" --> liquidity --> data
     routes -- "classify" --> guard --> ollama
+    hz["horizon.py<br/>Timestral in-process"]
+    routes -- "forecast" --> hz --> data
 ```
 
 Concurrency notes
@@ -160,7 +164,8 @@ frontend/src/
 └── modules/
     ├── AutoDisputeConcierge.jsx   Auto-Dispute Concierge view: queue, detail, evidence, match, PDF preview
     ├── CardOptimizer.jsx          Card Optimizer view: metric donuts, payment queue, recommendation, card options
-    └── LiquidityGuard.jsx         Liquidity Guard view: totals, account donuts, bill queue, line classifications, cash timeline
+    ├── LiquidityGuard.jsx         Liquidity Guard: left-side tabs for Tactical Ledger Guard / Strategic Horizon Engine, one selected account across both; tactical view: totals, account donuts, bill queue, line classifications, cash timeline
+    └── StrategicHorizon.jsx       Strategic Horizon Engine: account cards, corridor chart, floor, breach alert, sweep, daily values
 ```
 
 ```mermaid
@@ -173,6 +178,7 @@ flowchart TB
     LG --> BQ["BillQueue"]
     LG --> BD["BillDetail + LineRow"]
     LG --> CT["CashTimeline"]
+    LG -->|"Strategic Horizon Engine"| SH["StrategicHorizon<br/>HorizonChart"]
     CO --> MC["MetricCard + Donut<br/>blocked · fees paid · recovered · saved"]
     CO --> PQ["PaymentQueue"]
     CO --> Rec["Recommendation"]
@@ -671,6 +677,9 @@ Interactive docs: http://localhost:8000/docs
 | GET | `/api/liquidity-guard/bills` | `{forecast, classifications}`: every bill with per-line forecast, each account with its cash timeline, low point and first breach, the cycle and totals (debits, variable exposure, surprise, accounts below buffer, first breach), and classifications made so far | JSON |
 | POST | `/api/liquidity-guard/bills/{id}/classify` | Ask the decision model which lines are variable usage-based (gemma3, then rules, as fallbacks); compared with the rule per line | `{classification, forecast}` / 404 |
 | DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (Reset) | `{"cleared": n}` |
+| GET | `/api/liquidity-guard/forecast` (alias `/api/liquidity/forecast`) | 180-day history, `dates`, `p10`, `p50`, `p90` for 30 days, covariates, floor `breach`, `recommended_sweep`, `executed_sweep`, `source`/`model`/`route`/`notes` | JSON |
+| POST | `/api/liquidity-guard/forecast/sweep` | Execute the recommended sweep (simulated) and return the updated forecast | JSON / 409 if no sweep is needed |
+| DELETE | `/api/liquidity-guard/forecast` | Drop the executed sweep and the cached forecast | `{"cleared": {...}}` |
 
 ## 12. Configuration
 
@@ -684,6 +693,9 @@ All settings are environment variables, read in `config.py` and passed through `
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` | Matching, text and image (only model used; no fallback) |
 | `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Ollama's decision API (Ollama 0.35+), Card Optimizer and Liquidity Guard |
 | `OLLAMA_DECISION_MODEL` | `nimble` | Decision model for the Card Optimizer and Liquidity Guard |
+| `WITH_TIMESTRAL` (build arg) | `true` | Installs `requirements-forecast.txt` (Timestral, CPU torch) in the backend image |
+| `FORECAST_MODEL` | `mistralai/Timestral-209M` | Strategic Horizon forecast (weights in `HF_HOME`, the `hf-cache` volume in Docker) |
+| `FORECAST_TIMEOUT_SECONDS` | `20` | Strategic Horizon: slower than this, the statistical fallback answers |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | All Ollama calls |
 | `ALLOW_OFFLINE_FALLBACK` | `true` | Letter only: `false` fails the case instead of using the template letter |
 | `CHROMA_DIR` | `/tmp/payment_intelligence/chroma` (`/data/chroma` in Docker, on the `chroma-data` volume) | Chroma vector store |
@@ -718,6 +730,7 @@ All settings are environment variables, read in `config.py` and passed through `
 | Liquidity Guard: Ollama unavailable | The keyword rule's classification is used | "rules (models unavailable)" and the errors under the bill |
 | Liquidity Guard: model disagrees with the rule on a line | The model's answer drives the forecast; the rule's view is shown on the line | "rule says fixed/variable" on the line |
 | Liquidity Guard: bill not classified yet | Forecast counts only what is billed so far | "not classified" tag, `*` on the amount, amber banner |
+| Strategic Horizon: Timestral not installed, still loading, or slower than the timeout | The statistical fallback computes P10/P50/P90; the answer is not cached, so the next request tries Timestral again | Amber "Statistical fallback in use, not Timestral" banner with the reason; `forecast.status` in `/api/health` |
 
 ## 14. Card Optimizer and module gating
 
@@ -866,3 +879,12 @@ The rule (`rule_variable` in `liquidity.py`) checks, in order: strong usage mark
 commitment, % of usage, billed per impression/click/request, billed hourly), then fixed markers (seats, licences,
 membership, commitment, subscription, savings plan, per month), then usage units (hours, TB, GB, tokens, credits,
 segments), then a charge history that moved more than 10%.
+
+### Strategic Horizon
+
+A second view of the module forecasts the same three accounts 30 days ahead. `horizon.run_forecast()` sends each
+account's 180 days of balances and six known-future covariates (payroll, bill and top-up day, weekend, lull, month
+end) to Timestral (`mistralai/Timestral-209M`, loaded in the backend at startup) in one batch and reads its 0.1, 0.5
+and 0.9 quantiles. P10 below the account's minimum buffer gives the breach day and a sweep sized from the
+shortfall; executing it is simulated. Details, the call and the response are in [LIQUIDITY_GUARD.md § 8](LIQUIDITY_GUARD.md#8-strategic-horizon-forecast).
+
