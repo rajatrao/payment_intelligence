@@ -155,10 +155,11 @@ frontend/src/
 │   ├── MatchResults.jsx        Step 1 result: the file ranked against every disputed transaction
 │   ├── PipelineStages.jsx      Build progress strip: letter, PDF (pending / running / done / failed)
 │   ├── MatchPanel.jsx          Score, sub-score bars, field checks, cosine heatmap
+│   ├── Donut.jsx               Distribution donut (fixed colour per entity, animates on change)
 │   └── Icons.jsx               Inline SVG icons
 └── modules/
     ├── AutoDisputeConcierge.jsx   Auto-Dispute Concierge view: queue, detail, evidence, match, PDF preview
-    ├── CardOptimizer.jsx          Card Optimizer view: totals, payment queue, recommendation, card options
+    ├── CardOptimizer.jsx          Card Optimizer view: metric donuts, payment queue, recommendation, card options
     └── LiquidityGuard.jsx         Liquidity Guard view: totals, account donuts, bill queue, line classifications, cash timeline
 ```
 
@@ -172,6 +173,7 @@ flowchart TB
     LG --> BQ["BillQueue"]
     LG --> BD["BillDetail + LineRow"]
     LG --> CT["CashTimeline"]
+    CO --> MC["MetricCard + Donut<br/>blocked · fees paid · recovered · saved"]
     CO --> PQ["PaymentQueue"]
     CO --> Rec["Recommendation"]
     CO --> Opts["CardOptions"]

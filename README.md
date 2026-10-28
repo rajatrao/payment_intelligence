@@ -238,9 +238,10 @@ back to the embedding alone, and the package is built with a clearly labelled te
 7. Open the **Card Optimizer** tab. Select the declined **OVH** payment and click **Recommend route**: it should
    come back as `SCA_BYPASS_CORRIDOR` on the Irish lodged card, with the decision probabilities and the payment
    amount recovered.
-8. Click **Analyze all payments** to fill in the whole queue, then compare the header totals for fees paid,
-   recovered volume and fees saved. The card options table shows why each card is or isn't eligible. Click
-   **Reset** to clear the recommendations and start again.
+8. The four donuts at the top break down what is blocked or pending and the FX and cross-border fees paid, by
+   payment. Click **Analyze all payments** to fill in the whole queue: the **Recovered** and **Fees saved** donuts
+   fill in payment by payment, with the grey slice showing what is not recovered or saved yet. The card options
+   table shows why each card is or isn't eligible. Click **Reset** to clear the recommendations and start again.
 9. Open the **Liquidity Guard** tab. Every bill is marked "not classified", the donuts are faded and all three
    accounts stay above their buffers. Hover any Forecast value to see its line-by-line breakdown: before
    classification it is just what is billed so far. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
@@ -290,7 +291,7 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
     └── src/
         ├── App.jsx             tab registry and routing
         ├── api.js              backend client
-        ├── components/         Header, LockWall, Dropzone, PipelineStages, MatchPanel, Icons
+        ├── components/         Header, LockWall, Donut, Dropzone, PipelineStages, MatchPanel, Icons
         └── modules/            AutoDisputeConcierge, CardOptimizer, LiquidityGuard
 ```
 
