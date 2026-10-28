@@ -1,8 +1,8 @@
 # Payment Intelligence
 
-An all-in-one payment intelligence and treasury optimization dashboard for finance teams. It runs entirely on your
-machine: a React frontend and a FastAPI backend in Docker, with local models served by Ollama. No data leaves
-the machine and there are no third-party integrations.
+An all-in-one payment intelligence and treasury optimization dashboard for finance teams: a React frontend and a
+FastAPI backend, run with Docker. For local development the models are served by Ollama; in production the model
+calls can go to a cloud provider such as Anthropic or OpenAI instead.
 
 **Demo video:** https://youtu.be/bzPNRtc_JCA
 
@@ -23,8 +23,9 @@ requests, are detailed in **[docs/CARD_OPTIMIZER.md](docs/CARD_OPTIMIZER.md)** a
 
 ## Models used
 
-Every model runs locally and has one job, and every model answer is checked against a deterministic engine or rule
-before it reaches the screen.
+Each model has one job, and every model answer is checked against a deterministic engine or rule before it reaches
+the screen. These are the models used for local development; for production, the language and embedding calls can
+be pointed at a cloud provider such as Anthropic or OpenAI.
 
 | Model | Served by | Used for |
 | --- | --- | --- |
