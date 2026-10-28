@@ -8,13 +8,13 @@ the machine and there are no third-party integrations.
 
 **Built with:** React 18 · Vite · Tailwind CSS · FastAPI · Python 3.12 · Chroma · ReportLab · Docker · Ollama
 
-The product has three modules, all live.
+The product has three modules.
 
-| Module | What it does | Status |
-| --- | --- | --- |
-| **Auto-Dispute Concierge** | Matches uploaded evidence to a card transaction and generates a legal chargeback package | **Live** |
-| **Card Optimizer** | Recommends which corporate card to route a cross-border payment through, to clear SCA challenges and cut FX fees | **Live** |
-| **Liquidity Guard** | Flags variable usage-based liabilities (AWS, GCP, Meta Ads) before they auto-debit and forecasts each account's cash low point; forecasts a 30-day P10/P50/P90 cash corridor with Timestral | **Live** |
+| Module | What it does |
+| --- | --- |
+| **Auto-Dispute Concierge** | Matches uploaded evidence to a card transaction and generates a legal chargeback package |
+| **Card Optimizer** | Recommends which corporate card to route a cross-border payment through, to clear SCA challenges and cut FX fees |
+| **Liquidity Guard** | Flags variable usage-based liabilities (AWS, GCP, Meta Ads) before they auto-debit and forecasts each account's cash low point; forecasts a 30-day P10/P50/P90 cash corridor with Timestral |
 
 For the full blueprint (diagrams, data schemas, request flow, algorithms, API and configuration), see
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. The Card Optimizer and the Liquidity Guard, with their decision-API
