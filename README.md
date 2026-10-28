@@ -4,9 +4,7 @@ An all-in-one payment intelligence and treasury optimization dashboard for finan
 machine: a React frontend and a FastAPI backend in Docker, with local models served by Ollama. No data leaves
 the machine and there are no third-party integrations.
 
-**▶ [Watch the 5-minute demo on YouTube](https://youtu.be/bzPNRtc_JCA)**
-
-[![Payment Intelligence demo](https://img.youtube.com/vi/bzPNRtc_JCA/maxresdefault.jpg)](https://youtu.be/bzPNRtc_JCA)
+**Demo video:** https://youtu.be/bzPNRtc_JCA
 
 **Built with:** React 18 · Vite · Tailwind CSS · FastAPI · Python 3.12 · Chroma · ReportLab · Docker · Ollama
 
