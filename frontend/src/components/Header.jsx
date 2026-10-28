@@ -53,15 +53,14 @@ export default function Header({ modules, active, onSelect }) {
               role="tab"
               aria-selected={selected}
               onClick={() => onSelect(m.id)}
-              className={`flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition ${
+              className={`flex shrink-0 items-center gap-2 rounded-t-md border-b-2 px-3 py-2.5 text-sm font-medium transition ${
                 selected
-                  ? "border-slate-900 text-slate-900"
-                  : "border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700"
+                  ? "border-slate-900 bg-slate-100 text-slate-900"
+                  : "border-transparent text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700"
               }`}
             >
               {m.locked && <LockIcon className="h-3.5 w-3.5 text-slate-400" />}
               {m.label}
-              {!m.locked && <span className="tag tag-green">LIVE</span>}
             </button>
           );
         })}

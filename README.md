@@ -10,7 +10,7 @@ The product has three modules, all live.
 | --- | --- | --- |
 | **Auto-Dispute Concierge** | Matches uploaded evidence to a card transaction and generates a legal chargeback package | **Live** |
 | **Card Optimizer** | Recommends which corporate card to route a cross-border payment through, to clear SCA challenges and cut FX fees | **Live** |
-| **Liquidity Guard** | Flags variable usage-based liabilities (AWS, GCP, Meta Ads) before they auto-debit and forecasts the cash low point | **Live** |
+| **Liquidity Guard** | Flags variable usage-based liabilities (AWS, GCP, Meta Ads) before they auto-debit and forecasts each account's cash low point | **Live** |
 
 For the full blueprint (diagrams, data schemas, request flow, algorithms, API and configuration), see
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. The Card Optimizer and the Liquidity Guard, with their decision-API
@@ -114,12 +114,14 @@ heavy fees) and recommends which card in the company's portfolio each one should
 
 ## How the Liquidity Guard works
 
-The Liquidity Guard looks at the vendor bills that will auto-debit the operating account in the next few days and
-asks which of them are hiding a usage-based charge that is still growing.
+The Liquidity Guard looks at the vendor bills that will auto-debit the company's bank accounts in the next few days
+and asks which of them are hiding a usage-based charge that is still growing.
 
-1. **Bills.** Nine October statements (AWS, Google Cloud, Meta Ads, Snowflake, Twilio, Datadog, Slack, Salesforce
-   and a coworking office), captured on 28 Oct with 27 of 31 days elapsed. Each bill mixes fixed lines (seats,
-   licences, commitments) with metered lines, and the line text is copied straight from the invoice.
+1. **Bills and accounts.** Eleven October statements (AWS, Google Cloud, Meta Ads, Google Ads, LinkedIn, Snowflake,
+   Twilio, Datadog, Slack, Salesforce and a coworking office), captured on 28 Oct with 27 of 31 days elapsed. Each
+   bill debits one of three accounts: the operating account, the card settlement account and the marketing account.
+   Each bill mixes fixed lines (seats, licences, commitments) with metered lines, and the line text is copied
+   straight from the invoice.
 2. **Decision model.** For each bill, one request goes to Ollama's decision API (`POST /v1/systemone`, model
    `nimble`) with one `noul` question per line: "Is this a variable usage-based consumption line?". Each question
    carries only the invoice line text, its last three charges and the amount billed so far. nimble returns a
@@ -127,16 +129,17 @@ asks which of them are hiding a usage-based charge that is still growing.
 3. **Forecast (deterministic).** The classification decides how each line is forecast. A variable line's
    month-to-date amount is run-rated to the full cycle (amount × 31 / 27); a fixed line is charged as billed. A
    variable line forecast at more than 1.25× its three-cycle average is flagged as a spike.
-4. **Cash timeline.** Every auto-debit, plus payroll and a known customer receipt, is laid on a timeline against the
-   operating account's balance and its 75,000 USD minimum buffer. The UI shows the low point and the first day the
-   balance falls below the buffer.
+4. **Accounts and cash timeline.** Each account card shows a donut of its bills that grows as they are classified.
+   Every auto-debit, plus payroll and a known customer receipt, is laid on its account's timeline against that
+   account's balance and minimum buffer. The UI shows each account's low point and the first day it falls below
+   its buffer.
 5. **Compare and fall back.** A keyword rule gives a second opinion on every line; disagreements are shown, never
    overwritten. If the decision API or nimble is missing, gemma3 answers true/false per line through structured
    outputs, and if Ollama is unavailable the rule's answer is used. Each bill shows the model and route used.
 
-Before classification the forecast only counts what has been billed so far, and the account looks safe (low point
-about 81,800 USD). Classifying the bills shows the usage lines will keep growing to the end of the cycle, and the
-balance drops below the buffer on 3 Nov.
+Before classification the forecast only counts what has been billed so far, and every account looks safe.
+Classifying the bills shows the usage lines will keep growing to the end of the cycle: the card settlement account
+drops below its buffer on 3 Nov and the marketing account on 6 Nov, while the operating account stays safe.
 
 ## Local setup
 
@@ -237,13 +240,13 @@ back to the embedding alone, and the package is built with a clearly labelled te
    amount recovered.
 8. Click **Analyze all payments** to fill in the whole queue, then compare the header totals for fees paid,
    recovered volume and fees saved. The card options table shows why each card is or isn't eligible. Click
-   **Reset demo** to clear the recommendations and start again.
-9. Open the **Liquidity Guard** tab. Every bill is marked "not classified" and the cash low point stays above the
-   buffer. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
+   **Reset** to clear the recommendations and start again.
+9. Open the **Liquidity Guard** tab. Every bill is marked "not classified", the donuts are faded and all three
+   accounts stay above their buffers. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
    Bedrock and support lines as variable and the savings plan as fixed, with a probability for each.
-10. Click **Classify all bills**. The forecast grows to the full cycle, Meta Ads and AWS are flagged as spikes, and
-    the banner turns red: the balance falls below the 75,000 USD buffer on 3 Nov. Click **Reset demo** to start
-    again.
+10. Click **Classify all bills**. Each account's donut fills in and grows as its bills are classified, Meta Ads and
+    AWS are flagged as spikes, and the banner turns red: card settlement falls below its buffer on 3 Nov and
+    marketing on 6 Nov. Click an account card to see its cash timeline. Click **Reset** to start again.
 
 ## Configuration
 
@@ -303,11 +306,11 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | GET | `/api/disputes/cases/{case_id}` | Poll case status and results |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package (`?download=true` to download) |
 | GET | `/api/card-optimizer/payments` | Card portfolio, analysed cross-border payments and any recommendations so far |
-| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (the **Reset demo** button) |
+| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (the **Reset** button) |
 | POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for a reason code and card (checked against the rule engine) |
 | GET | `/api/liquidity-guard/bills` | Upcoming bills with line forecasts, the cash timeline, totals and classifications so far |
 | POST | `/api/liquidity-guard/bills/{id}/classify` | Ask the decision model which lines are variable usage-based (checked against the rule) |
-| DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (the **Reset demo** button) |
+| DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (the **Reset** button) |
 
 ## Local development without Docker
 

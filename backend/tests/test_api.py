@@ -60,8 +60,8 @@ def test_modules_list_liquidity_guard_as_live(client):
 
 def test_bills_start_unclassified(client):
     body = client.get("/api/liquidity-guard/bills").json()
-    assert body["classifications"] == {} and len(body["forecast"]["bills"]) == 9
-    assert body["forecast"]["totals"]["unclassified_bills"] == 9
+    assert body["classifications"] == {} and len(body["forecast"]["bills"]) == 11
+    assert body["forecast"]["totals"]["unclassified_bills"] == 11 and len(body["forecast"]["accounts"]) == 3
 
 
 def test_classify_stores_the_result_and_updates_the_forecast(client):
@@ -70,7 +70,7 @@ def test_classify_stores_the_result_and_updates_the_forecast(client):
     assert c["route"] == "/v1/systemone" and c["lines"]["aws_ec2"]["variable"] is True
     assert c["lines"]["aws_savings_plan"]["variable"] is False
     aws = next(b for b in body["forecast"]["bills"] if b["id"] == "bill_aws")
-    assert aws["classified"] and body["forecast"]["totals"]["unclassified_bills"] == 8
+    assert aws["classified"] and body["forecast"]["totals"]["unclassified_bills"] == 10
     assert client.get("/api/liquidity-guard/bills").json()["classifications"]["bill_aws"] == c
 
 

@@ -20,7 +20,6 @@ Contents
 13. [Failure modes and fallbacks](#13-failure-modes-and-fallbacks)
 14. [Card Optimizer and module gating](#14-card-optimizer-and-module-gating)
 15. [Liquidity Guard](#15-liquidity-guard)
-16. [Known limitations and review checklist](#16-known-limitations-and-review-checklist)
 
 ---
 
@@ -71,7 +70,7 @@ backend/app/
 │   └── transactions/       Mock transaction files, named by feature
 │       ├── disputes.py         Auto-Dispute Concierge dataset (live)
 │       ├── cross_border.py     Card Optimizer dataset and card portfolio (live)
-│       └── recurring.py        Liquidity Guard dataset: upcoming bills, operating account, cash flows (live)
+│       └── recurring.py        Liquidity Guard dataset: upcoming bills, three bank accounts, cash flows (live)
 └── services/
     ├── extraction.py       File-type detection, PDF text layer (pypdf, no OCR), chunking
     ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON, nimble decisions
@@ -160,7 +159,7 @@ frontend/src/
 └── modules/
     ├── AutoDisputeConcierge.jsx   Auto-Dispute Concierge view: queue, detail, evidence, match, PDF preview
     ├── CardOptimizer.jsx          Card Optimizer view: totals, payment queue, recommendation, card options
-    └── LiquidityGuard.jsx         Liquidity Guard view: totals, bill queue, line classifications, cash timeline
+    └── LiquidityGuard.jsx         Liquidity Guard view: totals, account donuts, bill queue, line classifications, cash timeline
 ```
 
 ```mermaid
@@ -169,6 +168,7 @@ flowchart TB
     App -->|"active = disputes"| ADC["AutoDisputeConcierge"]
     App -->|"active = card-optimizer"| CO["CardOptimizer"]
     App -->|"active = liquidity-guard"| LG["LiquidityGuard"]
+    LG --> AC["AccountCard + Donut<br/>bills per account"]
     LG --> BQ["BillQueue"]
     LG --> BD["BillDetail + LineRow"]
     LG --> CT["CashTimeline"]
@@ -508,7 +508,7 @@ document counts under `vector_store`.
 | `transactions/cross_border.py` `CROSS_BORDER_TRANSACTIONS` | 8 | Cross-border card payments: SCA soft declines (Visa 1A, Mastercard 65), a regional MCC block (05), a pending 3DS challenge and settled payments that paid FX and cross-border fees. Messy on purpose: alpha-3 countries (`DEU`, `JPN`, `CAN`), lower-case currencies, amounts as strings with separators, null memos. Kept in local currencies because FX is the point of the Card Optimizer. |
 | `transactions/cross_border.py` `CARD_PORTFOLIO` | 5 | Company cards: US Visa and Mastercard (USD), an Irish lodged virtual card (EUR, corporate exemption), a UK Visa (GBP, corporate exemption), a Singapore multi-currency card (SGD, USD, AUD, JPY, INR). Each has FX and cross-border fees in basis points. |
 | `transactions/cross_border.py` `REGIONS`, `ALPHA3`, `FX_RATES_USD` | | Country-to-region map (NA, EU, APAC), alpha-3 to alpha-2 codes, mock mid-market rates to USD. |
-| `transactions/recurring.py` `RECURRING_BILLS` | 9 bills, 22 lines | October statements due to auto-debit in early November (AWS, Google Cloud, Meta Ads, Snowflake, Twilio, Datadog, Slack, Salesforce, a coworking office), captured with 27 of 31 days elapsed. Each line has its invoice text, month-to-date amount (string with separators) and last three charges. Mixes metered lines with seats, licences and commitments, including hard cases: a support plan priced as 10% of usage, on-demand hosts above a commitment, a per-number monthly fee. Also the operating account (312,000 USD, 75,000 USD minimum buffer) and two known flows (payroll, a customer receipt). |
+| `transactions/recurring.py` `RECURRING_BILLS`, `ACCOUNTS` | 11 bills, 26 lines, 3 accounts | October statements due to auto-debit in early November (AWS, Google Cloud, Meta Ads, Google Ads, LinkedIn, Snowflake, Twilio, Datadog, Slack, Salesforce, a coworking office), captured with 27 of 31 days elapsed. Each line has its invoice text, month-to-date amount (string with separators) and last three charges. Mixes metered lines with seats, licences and commitments, including hard cases: a support plan priced as 10% of usage, on-demand hosts above a commitment, a per-number monthly fee. Each bill debits one of three accounts, each with a balance and minimum buffer: operating (240,000 / 75,000 USD), card settlement (135,000 / 60,000) and marketing (70,000 / 20,000). Two known flows (payroll, a customer receipt) hit the operating account. |
 
 ### Sample evidence library
 
@@ -664,11 +664,11 @@ Interactive docs: http://localhost:8000/docs
 | GET | `/api/disputes/cases/{case_id}` | Poll case status | DisputeCase / 404 |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package, inline (`?download=true` for attachment) | `application/pdf` / 404 until ready |
 | GET | `/api/card-optimizer/payments` | `{cards, payments, recommendations}`: the portfolio, every payment's analysis (normalised transaction, corridor, signals, tags, current fee, per-card options, rule answer) and recommendations made so far | JSON |
-| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (Reset demo) | `{"cleared": n}` |
+| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (Reset) | `{"cleared": n}` |
 | POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for the reason code and card (gemma3, then rules, as fallbacks); validated against the rule engine, savings computed by the engine | Recommendation JSON / 404 |
-| GET | `/api/liquidity-guard/bills` | `{forecast, classifications}`: every bill with per-line forecast, the cash timeline, the account, cycle and totals (debits, variable exposure, surprise, low point, first breach), and classifications made so far | JSON |
+| GET | `/api/liquidity-guard/bills` | `{forecast, classifications}`: every bill with per-line forecast, each account with its cash timeline, low point and first breach, the cycle and totals (debits, variable exposure, surprise, accounts below buffer, first breach), and classifications made so far | JSON |
 | POST | `/api/liquidity-guard/bills/{id}/classify` | Ask the decision model which lines are variable usage-based (gemma3, then rules, as fallbacks); compared with the rule per line | `{classification, forecast}` / 404 |
-| DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (Reset demo) | `{"cleared": n}` |
+| DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (Reset) | `{"cleared": n}` |
 
 ## 12. Configuration
 
@@ -830,13 +830,13 @@ The full request and response structure is in [LIQUIDITY_GUARD.md](LIQUIDITY_GUA
 
 ```mermaid
 flowchart LR
-    data["recurring.py<br/>9 bills · 22 lines"] --> bills["liquidity.bills()<br/>parse amounts · avg3 · rule"]
+    data["recurring.py<br/>11 bills · 26 lines · 3 accounts"] --> bills["liquidity.bills()<br/>parse amounts · avg3 · rule"]
     bills --> classify["liquidity_guard.classify(bill)"]
     classify -- "one noul question per line" --> nimble["POST /v1/systemone<br/>nimble"]
     nimble -- "probability per line, ≥ 0.5 = variable" --> store[("CLASSIFICATIONS<br/>in-memory")]
     classify -. "404 / missing line" .-> gemma["POST /api/chat<br/>gemma3 JSON schema"]
     classify -. "Ollama down" .-> rule["keyword rule"]
-    store --> forecast["liquidity.forecast()<br/>run-rate variable lines · timeline · buffer"]
+    store --> forecast["liquidity.forecast()<br/>run-rate variable lines · timeline and buffer per account"]
     bills --> forecast
     forecast --> ui["LiquidityGuard.jsx"]
 ```
@@ -848,47 +848,19 @@ flowchart LR
 2. **Forecast.** `project()` run-rates a variable line (`mtd × 31 / 27`) and keeps a fixed or unclassified line at
    its month-to-date amount. A variable line forecast above `SPIKE_RATIO` (1.25) × its three-cycle average is a
    spike.
-3. **Timeline.** Bill debits and the known flows are sorted by date, outflows before inflows on the same day so
-   the low point is never understated, and applied to the opening balance. Each event records the balance after
-   it and whether that is below the 75,000 USD buffer.
+3. **Timeline per account.** Each account's bill debits and known flows are sorted by date, outflows before inflows
+   on the same day so the low point is never understated, and applied to its opening balance. Each event records
+   the balance after it and whether that is below the account's buffer; the account gets its low point and first
+   breach.
 4. **Totals.** Debits, three-cycle average, variable exposure (forecast of every variable line), surprise
-   (variable forecast above average), unclassified bills, low point and first breach.
+   (variable forecast above average), unclassified bills, the accounts below buffer and the earliest breach.
 
-| State | Debits (USD) | Low point | Breach |
-| --- | --- | --- | --- |
-| No bills classified | 147,298.30 (billed so far) | 81,791.70 on 3 Nov | none |
-| All bills classified as the rule does | 164,359.09 | 65,880.54 on 3 Nov | 3 Nov |
+| State | Operating low point | Card settlement low point | Marketing low point | Accounts below buffer |
+| --- | --- | --- | --- | --- |
+| No bills classified (debits 165,758.30, billed so far) | 108,337.45 on 1 Nov | 64,154.25 on 14 Nov | 22,760.00 on 6 Nov | none |
+| All bills classified as the rule does (debits 185,405.76, variable exposure 152,267.76) | 106,049.66 on 1 Nov | 54,794.58 on 14 Nov, below buffer from 3 Nov | 15,909.63 on 6 Nov, below buffer from 6 Nov | 2 of 3 |
 
 The rule (`rule_variable` in `liquidity.py`) checks, in order: strong usage markers (on-demand, overage, above
 commitment, % of usage, billed per impression/click/request, billed hourly), then fixed markers (seats, licences,
 membership, commitment, subscription, savings plan, per month), then usage units (hours, TB, GB, tokens, credits,
 segments), then a charge history that moved more than 10%.
-
-## 16. Known limitations and review checklist
-
-Limitations
-
-- Cases and packages are in memory (only embeddings persist); one backend process; no auth (local demo).
-- Chroma is embedded, so only one backend process should write to `CHROMA_DIR` at a time.
-- Not yet run against real gemma3 / EmbeddingGemma 2 or in Docker; development used a stand-in Ollama server.
-- The 0.6 / 0.4 weights, rescale ranges and verdict thresholds are hand-tuned, not calibrated on EmbeddingGemma 2.
-- The image-embedding request format is unconfirmed against Ollama's documentation.
-- Chunking is line-based; complex invoice layouts may split related fields across chunks.
-- No OCR engine: photos are embedded as images and read by gemma3; scanned PDFs are not rasterised.
-- gemma3:4b can misread a photo; photo values can't be cross-checked against a text layer.
-- Headless browsers don't render PDFs in iframes; desktop Chrome, Safari and Firefox do.
-- Card Optimizer fees, FX rates and the 10 USD threshold are mock values; recommendations are in memory.
-- Liquidity Guard bills, balance and buffer are mock values; the forecast is a straight-line run-rate (no
-  seasonality or tiered pricing); classifications are in memory.
-
-Suggested review points
-
-1. The Ollama defaults (`config.py`, `.env.example`): EmbeddingGemma 2 for search and similarity, gemma3:4b for field reading and letters.
-2. The system prompt tone and hard rules (`letter.py`, `SYSTEM_PROMPT`).
-3. Scoring weights and thresholds (`matching.py`).
-4. Mock data realism (`data/transactions/`) and the sample documents (`services/samples.py`, `pdf_builder.py`).
-5. The package layout (`pdf_builder.py`, `build_chargeback_package`).
-6. Whether the Card Optimizer should keep foreign-currency data.
-7. The Card Optimizer card portfolio, eligibility rules and reason-code priority (`cross_border.py`, `corridor.py`).
-8. The Liquidity Guard definition and line wording sent to nimble (`liquidity_guard.py`), and the run-rate and
-   spike threshold (`liquidity.py`).

@@ -14,13 +14,12 @@ Contents
 6. [Fallbacks and errors](#6-fallbacks-and-errors)
 7. [API contract](#7-api-contract)
 8. [Tests](#8-tests)
-9. [Review checklist and limitations](#9-review-checklist-and-limitations)
 
 ---
 
 ## 1. What the module does
 
-Cloud, data and ad vendors bill on usage and auto-debit the operating account a few days after the cycle closes.
+Cloud, data and ad vendors bill on usage and auto-debit a bank account a few days after the cycle closes.
 Late in the month the statement shows only what has been used so far, so a treasury team that reads "billed so
 far" as "what will be charged" is surprised when the debit lands. The Liquidity Guard asks, for every line on
 every upcoming bill: **is this a variable usage-based consumption line?**
@@ -67,31 +66,40 @@ October cycle elapsed:
 | Amazon Web Services | 2 Nov | EC2 on-demand, data transfer, Bedrock tokens, Business Support (10% of usage): variable; Compute Savings Plan: fixed |
 | Google Cloud | 1 Nov | BigQuery on-demand, GKE pod hours, Cloud Storage: variable; Committed Use Discount: fixed |
 | Meta Platforms (Ads) | 3 Nov | Per-1,000-impressions campaign, per-click campaign: variable |
+| Google Ads | 4 Nov | Per-click search campaign, per-1,000-impressions display: variable |
+| LinkedIn | 6 Nov | Per-1,000-impressions sponsored content: variable; Sales Navigator seats: fixed |
 | Snowflake | 5 Nov | Compute credits, storage: variable; capacity commitment: fixed |
 | Twilio | 2 Nov | SMS segments: variable; phone numbers at $1.15/number/month: fixed |
 | Datadog | 3 Nov | On-demand hosts above commitment, log ingestion: variable; 150 committed hosts: fixed |
 | Slack, Salesforce, coworking office | 14 Nov, 1 Nov, 1 Nov | Seats, licences, desks: fixed |
 
-The operating account opens at 312,000 USD with a 75,000 USD minimum buffer. Payroll (98,000 USD out, 1 Nov) and a
-customer receipt (45,000 USD in, 4 Nov) are on the timeline too. Amounts arrive as strings with separators and
-are parsed first.
+Each bill debits one of three accounts:
+
+| Account | Opening balance | Minimum buffer | Bills and flows |
+| --- | --- | --- | --- |
+| Operating account ****2210 | 240,000 USD | 75,000 USD | Google Cloud, Snowflake, Salesforce, coworking office (ACH); payroll 98,000 out on 1 Nov; customer receipt 45,000 in on 4 Nov |
+| Card settlement ****7731 | 135,000 USD | 60,000 USD | AWS, Twilio, Datadog, Slack (auto-paid card statements) |
+| Marketing account ****4408 | 70,000 USD | 20,000 USD | Meta Ads, Google Ads, LinkedIn |
+
+Amounts arrive as strings with separators and are parsed first.
 
 `liquidity.py`:
 
 - `project(line, variable)`: a variable line is `mtd × 31 / 27`; a fixed or not yet classified line is its
   month-to-date amount.
 - A variable line forecast above `SPIKE_RATIO` (1.25) × its three-cycle average is a **spike**.
-- `forecast(classifications)` sorts every debit and flow by date (outflows before inflows on the same day, so the
-  low point is never understated), applies them to the opening balance, and records the balance after each event
-  and whether it is below the buffer.
+- `forecast(classifications)` builds a timeline for each account: its debits and flows sorted by date (outflows
+  before inflows on the same day, so the low point is never understated), applied to its opening balance, with the
+  balance after each event, whether it is below the account's buffer, the low point and the first breach.
 
-| State | Debits (USD) | Variable exposure | Low point | Breach |
+| State | Operating low point | Card settlement low point | Marketing low point | Accounts below buffer |
 | --- | --- | --- | --- | --- |
-| No bills classified | 147,298.30 (billed so far) | 0 | 81,791.70 on 3 Nov | none |
-| All bills classified as the rule does | 164,359.09 | 132,221.09 | 65,880.54 on 3 Nov | 3 Nov |
+| No bills classified (debits 165,758.30, billed so far) | 108,337.45 on 1 Nov | 64,154.25 on 14 Nov | 22,760.00 on 6 Nov | none |
+| All bills classified as the rule does (debits 185,405.76, variable exposure 152,267.76) | 106,049.66 on 1 Nov | 54,794.58 on 14 Nov, below buffer from 3 Nov | 15,909.63 on 6 Nov, below buffer from 6 Nov | 2 of 3 |
 
-That is the demo: before classification the account looks safe; once the usage lines are recognised, the
-forecast shows the balance falling below the buffer on 3 Nov.
+That is the demo: before classification every account looks safe; once the usage lines are recognised, card
+settlement falls below its buffer on 3 Nov and marketing on 6 Nov. In the UI each account card shows a donut of
+its bills (faded while not classified) that grows as the bills are classified.
 
 ## 4. Decision API interaction
 
@@ -228,9 +236,16 @@ classification returns `source`, `model`, `route` and `notes`, so the UI shows w
 {
   "analysis_date": "2026-10-28",
   "cycle": {"start": "2026-10-01", "end": "2026-10-31", "days": 31, "days_elapsed": 27},
-  "account": {"name": "Operating account (USD) ****2210", "balance": 312000.0, "currency": "USD", "minimum_buffer": 75000.0},
+  "accounts": [{
+    "id": "acct_cards", "name": "Card settlement (USD) ****7731", "purpose": "Auto-pays the Visa and Mastercard statements",
+    "balance": 135000.0, "currency": "USD", "minimum_buffer": 60000.0,
+    "bill_ids": ["bill_aws", "bill_twilio", "bill_datadog", "bill_slack"], "debits": 80205.42, "unclassified_bills": 0,
+    "timeline": [{"date": "2026-11-02", "label": "Amazon Web Services auto-debit", "amount": -56792.75, "kind": "bill",
+                  "bill_id": "bill_aws", "estimate": false, "balance_after": 78207.25, "below_buffer": false}],
+    "low_point": {"balance": 54794.58, "date": "2026-11-14"}, "first_breach": "2026-11-03"
+  }],
   "bills": [{
-    "id": "bill_meta", "vendor": "Meta Platforms (Ads)", "descriptor": "FACEBK *ADS 9QZ3KL4", "debit_date": "2026-11-03",
+    "id": "bill_meta", "account_id": "acct_marketing", "vendor": "Meta Platforms (Ads)", "descriptor": "FACEBK *ADS 9QZ3KL4", "debit_date": "2026-11-03",
     "classified": true, "projected": 33043.7, "billed_so_far": 28780.0, "avg3": 11450.0, "change_pct": 188.6,
     "variable_lines": 2, "spike": true,
     "lines": [{"id": "meta_launch", "description": "Campaign 'Q4 Launch' - Advantage+ shopping, billed per 1,000 impressions",
@@ -238,11 +253,9 @@ classification returns `source`, `model`, `route` and `notes`, so the UI shows w
                "rule": {"variable": true, "why": "priced on metered usage"},
                "variable": true, "projected": 28244.44, "change_pct": 283.4, "spike": true}]
   }],
-  "timeline": [{"date": "2026-11-01", "label": "Payroll (semi-monthly)", "amount": -98000.0, "kind": "flow",
-                "bill_id": null, "estimate": false, "balance_after": 214000.0, "below_buffer": false}],
-  "totals": {"debits": 164359.09, "avg3": 94490.34, "change_pct": 73.9, "variable_exposure": 132221.09,
-             "surprise": 69868.75, "unclassified_bills": 0,
-             "low_point": {"balance": 65880.54, "date": "2026-11-03"}, "first_breach": "2026-11-03"}
+  "totals": {"debits": 185405.76, "avg3": 110223.67, "change_pct": 68.2, "variable_exposure": 152267.76,
+             "surprise": 75182.09, "unclassified_bills": 0, "accounts_below_buffer": ["acct_cards", "acct_marketing"],
+             "first_breach": {"date": "2026-11-03", "account_id": "acct_cards"}}
 }
 ```
 
@@ -266,7 +279,7 @@ classification returns `source`, `model`, `route` and `notes`, so the UI shows w
 ```
 
 Unknown id returns 404. Classifications are kept in memory (`CLASSIFICATIONS` in `main.py`).
-`DELETE /api/liquidity-guard/classifications` clears them and returns `{"cleared": n}`; the UI's **Reset demo**
+`DELETE /api/liquidity-guard/classifications` clears them and returns `{"cleared": n}`; the UI's **Reset**
 button calls it.
 
 ## 8. Tests
@@ -281,7 +294,7 @@ python -m pytest -q
 
 | File | What it covers |
 | --- | --- |
-| `tests/test_liquidity.py` | The rule on all 22 lines, including on-demand above a commitment; parsing the string amounts; run-rate for variable lines only; the unclassified forecast (no breach) and the classified one (breach on 3 Nov, exact totals); timeline order and running balance; estimates for unclassified bills; one `noul` question per line with no rule answer in the request; the 0.5 threshold; a disagreement shown, not corrected; a missing line falls back to gemma3; no models falls back to the rule |
+| `tests/test_liquidity.py` | The rule on all 26 lines, including on-demand above a commitment; parsing the string amounts; run-rate for variable lines only; every bill on one account; the unclassified forecast (no breach) and the classified one (card settlement below buffer on 3 Nov, marketing on 6 Nov, operating safe, exact totals); timeline order and running balance per account; payroll and receipts on the operating account only; estimates for unclassified bills; one `noul` question per line with no rule answer in the request; the 0.5 threshold; a disagreement shown, not corrected; a missing line falls back to gemma3; no models falls back to the rule |
 | `tests/test_api.py` | Liquidity Guard listed as live; bills start unclassified; classify stores the result and updates the forecast; reset clears it; unknown bill 404 |
 
 Against the real model, with the app running:
@@ -293,20 +306,3 @@ python3 scripts/check_liquidity_decisions.py
 clears earlier classifications, classifies every bill, prints nimble's probability and the rule's answer for each
 line and the forecast they add up to, and writes the full responses to `scripts/liquidity_decisions.json`
 (git-ignored).
-
-## 9. Review checklist and limitations
-
-Review points:
-
-1. The `DEFINITION` and line wording in `liquidity_guard.py`: do they read as a definition and facts, not hints?
-2. The hard lines: AWS Business Support (10% of usage), Datadog on-demand hosts above commitment, Twilio's
-   per-number monthly fee.
-3. The run-rate, `SPIKE_RATIO` and buffer in `liquidity.py` and `recurring.py`.
-
-Limitations:
-
-- Developed against a stand-in decision API; run the check script on real nimble to see its probabilities.
-- The forecast is a straight-line run-rate: no seasonality, tiered pricing, credits or mid-cycle commitments.
-- One bill per decision call; **Classify all bills** runs them one at a time.
-- Bills, balance, buffer and cash flows are mock values. Classifications are in memory.
-- The gemma3 fallback returns true/false only, so no probability bar is shown on that path.

@@ -7,6 +7,116 @@ const usd0 = (v) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v || 0);
 const day = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 const pct = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(0)}%`);
+const usdK = (v) => (v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : usd0(v));
+const short = (account) => account.name.split(" (")[0].replace(/ account$/, "");
+
+// Categorical slots in fixed order (validated for colour-vision deficiency); a bill keeps its slot within its account.
+const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"];
+
+function Donut({ slices, size = 128, stroke = 16 }) {
+  const total = slices.reduce((a, s) => a + s.value, 0);
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const gap = slices.length > 1 ? 2 : 0;
+  let start = 0;
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#f1f5f9" strokeWidth={stroke} />
+        {slices.map((s) => {
+          const len = total ? (s.value / total) * c : 0;
+          const offset = -start;
+          start += len;
+          return (
+            <circle
+              key={s.id}
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              fill="none"
+              stroke={s.color}
+              strokeOpacity={s.estimate ? 0.4 : 1}
+              strokeWidth={stroke}
+              strokeDasharray={`${Math.max(0, len - gap)} ${c}`}
+              strokeDashoffset={offset}
+              style={{ transition: "stroke-dasharray 700ms ease, stroke-dashoffset 700ms ease, stroke-opacity 700ms ease" }}
+            >
+              <title>{`${s.label}: ${usd0(s.value)} (${total ? Math.round((s.value / total) * 100) : 0}%)${
+                s.estimate ? ", billed so far" : ""
+              }`}</title>
+            </circle>
+          );
+        })}
+      </svg>
+      <div className="pointer-events-none absolute inset-0 grid place-items-center text-center">
+        <div>
+          <div className="text-[10px] text-slate-500">Forecast</div>
+          <div className="font-mono text-sm font-semibold tabular-nums">{usdK(total)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AccountCard({ account, bills, selected, onSelect }) {
+  const own = account.bill_ids.map((id) => bills.find((b) => b.id === id));
+  const slices = own.map((b, i) => ({ id: b.id, label: b.vendor, value: b.projected, color: SERIES[i], estimate: !b.classified }));
+  const total = account.debits || 1;
+  return (
+    <button
+      onClick={onSelect}
+      className={`card w-full p-3 text-left transition ${selected ? "ring-2 ring-slate-900" : "hover:ring-1 hover:ring-slate-300"}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-xs font-semibold">{account.name}</div>
+          <div className="truncate text-[10px] text-slate-500">{account.purpose}</div>
+        </div>
+        {account.first_breach ? (
+          <span className="tag tag-red shrink-0">below buffer {day(account.first_breach)}</span>
+        ) : account.unclassified_bills ? (
+          <span className="tag tag-slate shrink-0">{account.unclassified_bills} not classified</span>
+        ) : (
+          <span className="tag tag-green shrink-0">above buffer</span>
+        )}
+      </div>
+      <div className="mt-2 flex items-center gap-3">
+        <Donut slices={slices} />
+        <ul className="min-w-0 flex-1 space-y-1 text-[11px]">
+          {slices.map((s) => (
+            <li key={s.id} className="flex items-center gap-1.5">
+              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: s.color, opacity: s.estimate ? 0.4 : 1 }} />
+              <span className="min-w-0 flex-1 truncate text-slate-700">{s.label}</span>
+              <span className="font-mono tabular-nums text-slate-900">
+                {usdK(s.value)}
+                {s.estimate && <span className="text-slate-400">*</span>}
+              </span>
+              <span className="w-8 text-right font-mono tabular-nums text-slate-500">
+                {Math.round((s.value / total) * 100)}%
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-2 border-t border-slate-100 pt-2 font-mono text-[10px] tabular-nums text-slate-500">
+        <div>
+          <div className="label">Balance</div>
+          <div className="text-slate-800">{usd0(account.balance)}</div>
+        </div>
+        <div>
+          <div className="label">Buffer</div>
+          <div className="text-slate-800">{usd0(account.minimum_buffer)}</div>
+        </div>
+        <div>
+          <div className="label">Low point</div>
+          <div className={account.first_breach ? "text-red-600" : "text-emerald-600"}>
+            {usd0(account.low_point.balance)} · {day(account.low_point.date)}
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
 
 function Stat({ label, value, tone = "" }) {
   return (
@@ -17,7 +127,7 @@ function Stat({ label, value, tone = "" }) {
   );
 }
 
-function BillQueue({ bills, selectedId, onSelect }) {
+function BillQueue({ bills, accounts, selectedId, onSelect }) {
   return (
     <div className="card">
       <div className="card-header">
@@ -29,6 +139,7 @@ function BillQueue({ bills, selectedId, onSelect }) {
           <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
             <tr>
               <th className="px-3 py-1.5 font-semibold">Vendor</th>
+              <th className="px-2 py-1.5 font-semibold">Account</th>
               <th className="px-2 py-1.5 font-semibold">Debit</th>
               <th className="px-2 py-1.5 text-right font-semibold">3-cycle avg</th>
               <th className="px-2 py-1.5 text-right font-semibold">Forecast</th>
@@ -45,8 +156,9 @@ function BillQueue({ bills, selectedId, onSelect }) {
                   onClick={() => onSelect(b.id)}
                   className={`cursor-pointer border-t border-slate-100 ${selected ? "bg-slate-900 text-white" : "hover:bg-slate-50"}`}
                 >
-                  <td className="max-w-[180px] truncate px-3 py-1.5 font-mono">{b.descriptor}</td>
-                  <td className="px-2 py-1.5 font-mono">{day(b.debit_date)}</td>
+                  <td className="max-w-[160px] truncate px-3 py-1.5 font-mono">{b.descriptor}</td>
+                  <td className="whitespace-nowrap px-2 py-1.5">{short(accounts.find((a) => a.id === b.account_id))}</td>
+                  <td className="whitespace-nowrap px-2 py-1.5 font-mono">{day(b.debit_date)}</td>
                   <td className="px-2 py-1.5 text-right font-mono tabular-nums">{usd0(b.avg3)}</td>
                   <td className="px-2 py-1.5 text-right font-mono tabular-nums">
                     {usd0(b.projected)}
@@ -59,7 +171,7 @@ function BillQueue({ bills, selectedId, onSelect }) {
                   >
                     {b.classified ? pct(b.change_pct) : "—"}
                   </td>
-                  <td className="px-3 py-1.5">
+                  <td className="whitespace-nowrap px-3 py-1.5">
                     {!b.classified ? (
                       <span className="tag tag-slate">not classified</span>
                     ) : b.spike ? (
@@ -178,8 +290,8 @@ function BillDetail({ bill, cls, busy, onClassify }) {
   );
 }
 
-function CashTimeline({ forecast, selectedId }) {
-  const { account, timeline, totals } = forecast;
+function CashTimeline({ forecast, account, selectedId }) {
+  const { timeline } = account;
   const top = Math.max(account.balance, ...timeline.map((e) => e.balance_after));
   const width = (v) => `${Math.max(0, Math.min(100, (v / top) * 100))}%`;
   return (
@@ -233,7 +345,7 @@ function CashTimeline({ forecast, selectedId }) {
         </tbody>
       </table>
       <div className="border-t border-slate-100 px-3 py-1.5 text-[10px] text-slate-500">
-        Low point {usd0(totals.low_point.balance)} on {day(totals.low_point.date)}. The tick on each bar is the buffer.
+        Low point {usd0(account.low_point.balance)} on {day(account.low_point.date)}. The tick on each bar is the buffer.
       </div>
     </div>
   );
@@ -242,6 +354,7 @@ function CashTimeline({ forecast, selectedId }) {
 export default function LiquidityGuard() {
   const [data, setData] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [accountId, setAccountId] = useState(null);
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
@@ -251,6 +364,7 @@ export default function LiquidityGuard() {
       .then((d) => {
         setData(d);
         setSelectedId((id) => id || d.forecast.bills[0]?.id);
+        setAccountId((id) => id || d.forecast.bills[0]?.account_id);
       })
       .catch((e) => setError(`Could not load bills: ${e.message}`));
 
@@ -271,9 +385,14 @@ export default function LiquidityGuard() {
     }
   };
 
+  const selectBill = (id) => {
+    setSelectedId(id);
+    setAccountId(data.forecast.bills.find((b) => b.id === id)?.account_id);
+  };
+
   const classifyAll = async () => {
     for (const b of data.forecast.bills) {
-      setSelectedId(b.id);
+      selectBill(b.id);
       await classify(b.id);
     }
   };
@@ -293,7 +412,8 @@ export default function LiquidityGuard() {
   const { forecast, classifications } = data;
   const t = forecast.totals;
   const bill = forecast.bills.find((b) => b.id === selectedId);
-  const breach = t.first_breach;
+  const account = forecast.accounts.find((a) => a.id === accountId) || forecast.accounts[0];
+  const breached = forecast.accounts.filter((a) => a.first_breach).sort((a, b) => (a.first_breach < b.first_breach ? -1 : 1));
 
   return (
     <div className="space-y-4">
@@ -313,19 +433,20 @@ export default function LiquidityGuard() {
             tone="text-amber-600"
           />
           <Stat
-            label="Cash low point"
-            value={`${usd0(t.low_point.balance)} · ${day(t.low_point.date)}`}
-            tone={breach ? "text-red-600" : "text-emerald-600"}
+            label="Accounts below buffer"
+            value={`${breached.length} of ${forecast.accounts.length}`}
+            tone={breached.length ? "text-red-600" : "text-emerald-600"}
           />
         </div>
       </div>
 
       {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">{error}</div>}
-      {breach ? (
+      {breached.length ? (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
-          The operating account drops below the {usd0(forecast.account.minimum_buffer)} buffer on {day(breach)}
-          {t.unclassified_bills ? " even before usage is forecast" : ""}. Low point {usd0(t.low_point.balance)} on{" "}
-          {day(t.low_point.date)}.
+          {breached
+            .map((a) => `${short(a)} drops below its ${usd0(a.minimum_buffer)} buffer on ${day(a.first_breach)}`)
+            .join("; ")}
+          {t.unclassified_bills ? ", even before all usage is forecast" : ""}.
         </div>
       ) : t.unclassified_bills ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
@@ -334,22 +455,34 @@ export default function LiquidityGuard() {
         </div>
       ) : (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
-          The operating account stays above the {usd0(forecast.account.minimum_buffer)} buffer through every auto-debit.
+          Every account stays above its buffer through every auto-debit.
         </div>
       )}
 
+      <div className="grid gap-4 md:grid-cols-3">
+        {forecast.accounts.map((a) => (
+          <AccountCard
+            key={a.id}
+            account={a}
+            bills={forecast.bills}
+            selected={a.id === account.id}
+            onSelect={() => setAccountId(a.id)}
+          />
+        ))}
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-[minmax(0,6fr)_minmax(0,6fr)]">
         <section className="space-y-4">
-          <BillQueue bills={forecast.bills} selectedId={selectedId} onSelect={setSelectedId} />
+          <BillQueue bills={forecast.bills} accounts={forecast.accounts} selectedId={selectedId} onSelect={selectBill} />
           <div className="flex gap-2">
             <button className="btn-secondary flex-1" onClick={classifyAll} disabled={!!busy}>
               {busy ? <Spinner /> : <SparkIcon />} Classify all bills
             </button>
             <button className="btn-secondary" onClick={reset} disabled={!!busy || !Object.keys(classifications).length}>
-              Reset demo
+              Reset
             </button>
           </div>
-          <CashTimeline forecast={forecast} selectedId={selectedId} />
+          <CashTimeline forecast={forecast} account={account} selectedId={selectedId} />
         </section>
         <section className="space-y-4">
           {bill && <BillDetail bill={bill} cls={classifications[bill.id]} busy={busy} onClassify={() => classify(bill.id)} />}

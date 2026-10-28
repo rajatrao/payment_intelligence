@@ -272,7 +272,7 @@ export default function CardOptimizer() {
               {busy ? <Spinner /> : <SparkIcon />} Analyze all payments
             </button>
             <button className="btn-secondary" onClick={reset} disabled={!!busy || !Object.keys(recs).length}>
-              Reset demo
+              Reset
             </button>
           </div>
         </section>

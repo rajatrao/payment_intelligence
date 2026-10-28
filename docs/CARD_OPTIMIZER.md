@@ -13,7 +13,6 @@ Contents
 6. [Fallbacks and errors](#6-fallbacks-and-errors)
 7. [API contract](#7-api-contract)
 8. [Tests](#8-tests)
-9. [Review checklist and limitations](#9-review-checklist-and-limitations)
 
 ---
 
@@ -305,7 +304,7 @@ so the UI shows which path answered and why.
 ```
 
 Unknown id returns 404. Recommendations are kept in memory (`RECOMMENDATIONS` in `main.py`).
-`DELETE /api/card-optimizer/recommendations` clears them and returns `{"cleared": n}`; the UI's **Reset demo**
+`DELETE /api/card-optimizer/recommendations` clears them and returns `{"cleared": n}`; the UI's **Reset**
 button calls it.
 
 ## 8. Tests
@@ -335,22 +334,3 @@ python3 scripts/check_card_decisions.py
 
 prints nimble's choice, the rule answer and the probabilities per payment, and writes the full responses to
 `scripts/card_decisions.json` (git-ignored).
-
-## 9. Review checklist and limitations
-
-Review points:
-
-1. Card descriptions and reason-code criteria in `card_optimizer.py` (`_card_line`, `REASON_CRITERIA`): do they
-   read as facts and definitions, not hints?
-2. The rule priority in `corridor.rule_recommendation` (SCA, then block, then 10 USD threshold, then FX).
-3. The mock portfolio and fees in `cross_border.py`.
-4. Whether to draw `card_probabilities` in the UI as well.
-
-Limitations:
-
-- nimble is confident on 7 of 8 payments; Bloomberg is 0.61 vs 0.39 (SCA), likely pulled by the UK card's
-  "corporate SCA exemption: yes". Rerun the check script after any wording change.
-- Two decision calls per payment (nimble reports about 90 ms each on Apple Silicon); "Analyze all payments" runs
-  them one payment at a time.
-- FX rates, card fees and the 10 USD threshold are mock values. Recommendations are in memory.
-- The gemma3 fallback is a single structured call, not the two-step flow.

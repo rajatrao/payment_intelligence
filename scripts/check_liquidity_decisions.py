@@ -43,9 +43,10 @@ for b in bills:
 
 t = forecast["totals"]
 print(f"\n{agree}/{total} lines agree with the rule engine.")
-print(f"Auto-debits {t['debits']:,.2f} USD, variable exposure {t['variable_exposure']:,.2f}, "
-      f"low point {t['low_point']['balance']:,.2f} on {t['low_point']['date']}, "
-      f"buffer breach {t['first_breach'] or 'none'}.")
+print(f"Auto-debits {t['debits']:,.2f} USD, variable exposure {t['variable_exposure']:,.2f} USD.")
+for a in forecast["accounts"]:
+    print(f"  {a['name']:34} debits {a['debits']:>11,.2f}  low point {a['low_point']['balance']:>11,.2f} on "
+          f"{a['low_point']['date']}  buffer breach {a['first_breach'] or 'none'}")
 out = Path(__file__).with_name("liquidity_decisions.json")
 out.write_text(json.dumps(results, indent=1))
 print(f"Full responses: {out}")

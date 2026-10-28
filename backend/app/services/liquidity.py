@@ -7,15 +7,14 @@ the decision model in liquidity_guard.py) decides how the line is forecast:
   (mtd x cycle days / days elapsed);
 - fixed: the amount is contracted, so the month-to-date amount is the charge.
 
-The engine then lays every auto-debit and known cash flow on a timeline against the operating account and flags
-where the balance falls below the minimum buffer. A keyword rule gives a second-opinion classification; it is
+The engine then lays every auto-debit and known cash flow on a timeline against the account it debits, and flags
+where each account's balance falls below its minimum buffer. A keyword rule gives a second-opinion classification; it is
 shown next to the model's answer, never used in its place.
 """
 
 import re
 
-from app.data.transactions.recurring import (ANALYSIS_DATE, CYCLE, KNOWN_FLOWS, OPERATING_ACCOUNT,
-                                             RECURRING_BILLS)
+from app.data.transactions.recurring import ACCOUNTS, ANALYSIS_DATE, CYCLE, KNOWN_FLOWS, RECURRING_BILLS
 
 # A variable line whose forecast is this much above its 3-cycle average is a surprise.
 SPIKE_RATIO = 1.25
@@ -57,7 +56,7 @@ def _line(raw: dict) -> dict:
 
 
 def bills() -> list[dict]:
-    return [{**{k: b[k] for k in ("id", "vendor", "descriptor", "debit_date", "payment_method")},
+    return [{**{k: b[k] for k in ("id", "account_id", "vendor", "descriptor", "debit_date", "payment_method")},
              "lines": [_line(l) for l in b["lines"]]} for b in RECURRING_BILLS]
 
 
@@ -72,33 +71,12 @@ def project(line: dict, variable: bool | None) -> float:
     return line["mtd"]
 
 
-def forecast(classifications: dict[str, bool]) -> dict:
-    """Bills with per-line forecasts, the cash timeline and the totals, for the given line classifications."""
-    out_bills, events = [], []
-    for bill in bills():
-        lines = []
-        for line in bill["lines"]:
-            variable = classifications.get(line["id"])
-            projected = project(line, variable)
-            lines.append({**line, "variable": variable, "projected": projected,
-                          "change_pct": round((projected / line["avg3"] - 1) * 100, 1) if line["avg3"] else None,
-                          "spike": bool(variable) and projected > line["avg3"] * SPIKE_RATIO})
-        projected = round(sum(l["projected"] for l in lines), 2)
-        avg3 = round(sum(l["avg3"] for l in lines), 2)
-        classified = all(l["variable"] is not None for l in lines)
-        out_bills.append({**bill, "lines": lines, "classified": classified, "projected": projected,
-                          "billed_so_far": round(sum(l["mtd"] for l in lines), 2), "avg3": avg3,
-                          "change_pct": round((projected / avg3 - 1) * 100, 1) if avg3 else None,
-                          "variable_lines": sum(1 for l in lines if l["variable"]),
-                          "spike": any(l["spike"] for l in lines)})
-        events.append({"date": bill["debit_date"], "label": f"{bill['vendor']} auto-debit", "amount": -projected,
-                       "kind": "bill", "bill_id": bill["id"], "estimate": not classified})
-    events += [{**f, "kind": "flow", "bill_id": None, "estimate": False} for f in KNOWN_FLOWS]
+def _timeline(account: dict, events: list[dict]) -> dict:
+    """Apply one account's events to its opening balance: balance after each, low point, first breach."""
     # Same-day outflows before inflows, so the low point is never understated.
-    events.sort(key=lambda e: (e["date"], e["amount"] > 0, e["amount"]))
-
-    balance = _amount(OPERATING_ACCOUNT["balance"])
-    buffer = OPERATING_ACCOUNT["minimum_buffer"]
+    events = sorted(events, key=lambda e: (e["date"], e["amount"] > 0, e["amount"]))
+    balance = _amount(account["balance"])
+    buffer = account["minimum_buffer"]
     low = {"balance": balance, "date": ANALYSIS_DATE}
     first_breach = None
     for e in events:
@@ -109,20 +87,54 @@ def forecast(classifications: dict[str, bool]) -> dict:
             low = {"balance": balance, "date": e["date"]}
         if e["below_buffer"] and first_breach is None:
             first_breach = e["date"]
+    return {"timeline": events, "low_point": low, "first_breach": first_breach}
+
+
+def forecast(classifications: dict[str, bool]) -> dict:
+    """Bills with per-line forecasts, each account's cash timeline, and the totals, for the given classifications."""
+    out_bills = []
+    for bill in bills():
+        lines = []
+        for line in bill["lines"]:
+            variable = classifications.get(line["id"])
+            projected = project(line, variable)
+            lines.append({**line, "variable": variable, "projected": projected,
+                          "change_pct": round((projected / line["avg3"] - 1) * 100, 1) if line["avg3"] else None,
+                          "spike": bool(variable) and projected > line["avg3"] * SPIKE_RATIO})
+        projected = round(sum(l["projected"] for l in lines), 2)
+        avg3 = round(sum(l["avg3"] for l in lines), 2)
+        out_bills.append({**bill, "lines": lines, "classified": all(l["variable"] is not None for l in lines),
+                          "projected": projected, "billed_so_far": round(sum(l["mtd"] for l in lines), 2),
+                          "avg3": avg3, "change_pct": round((projected / avg3 - 1) * 100, 1) if avg3 else None,
+                          "variable_lines": sum(1 for l in lines if l["variable"]),
+                          "spike": any(l["spike"] for l in lines)})
+
+    accounts = []
+    for acct in ACCOUNTS:
+        own = [b for b in out_bills if b["account_id"] == acct["id"]]
+        events = [{"date": b["debit_date"], "label": f"{b['vendor']} auto-debit", "amount": -b["projected"],
+                   "kind": "bill", "bill_id": b["id"], "estimate": not b["classified"]} for b in own]
+        events += [{**{k: f[k] for k in ("date", "label", "amount")}, "kind": "flow", "bill_id": None,
+                    "estimate": False} for f in KNOWN_FLOWS if f["account_id"] == acct["id"]]
+        accounts.append({**acct, "balance": _amount(acct["balance"]), "bill_ids": [b["id"] for b in own],
+                         "debits": round(sum(b["projected"] for b in own), 2),
+                         "unclassified_bills": sum(1 for b in own if not b["classified"]),
+                         **_timeline(acct, events)})
 
     variable_lines = [l for b in out_bills for l in b["lines"] if l["variable"]]
     debits = round(sum(b["projected"] for b in out_bills), 2)
     avg3_total = round(sum(b["avg3"] for b in out_bills), 2)
+    breaches = sorted((a for a in accounts if a["first_breach"]), key=lambda a: a["first_breach"])
     return {
         "analysis_date": ANALYSIS_DATE, "cycle": CYCLE,
-        "account": {**OPERATING_ACCOUNT, "balance": _amount(OPERATING_ACCOUNT["balance"])},
-        "bills": out_bills, "timeline": events,
+        "accounts": accounts, "bills": out_bills,
         "totals": {
             "debits": debits, "avg3": avg3_total,
             "change_pct": round((debits / avg3_total - 1) * 100, 1) if avg3_total else None,
             "variable_exposure": round(sum(l["projected"] for l in variable_lines), 2),
             "surprise": round(sum(l["projected"] - l["avg3"] for l in variable_lines), 2),
             "unclassified_bills": sum(1 for b in out_bills if not b["classified"]),
-            "low_point": low, "first_breach": first_breach,
+            "accounts_below_buffer": [a["id"] for a in breaches],
+            "first_breach": {"date": breaches[0]["first_breach"], "account_id": breaches[0]["id"]} if breaches else None,
         },
     }

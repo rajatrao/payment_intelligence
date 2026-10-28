@@ -6,9 +6,10 @@ from app.services import liquidity, liquidity_guard
 from app.services.ollama_client import OllamaUnavailable
 
 VARIABLE_LINES = {"aws_ec2", "aws_transfer", "aws_bedrock", "aws_support", "gcp_bigquery", "gcp_gke", "gcp_storage",
-                  "meta_launch", "meta_retarget", "sf_compute", "sf_storage", "tw_sms", "dd_ondemand", "dd_logs"}
+                  "meta_launch", "meta_retarget", "sf_compute", "sf_storage", "tw_sms", "dd_ondemand", "dd_logs",
+                  "gads_search", "gads_display", "li_sponsored"}
 FIXED_LINES = {"aws_savings_plan", "gcp_cud", "sf_capacity", "tw_numbers", "dd_hosts", "slack_seats",
-               "sfdc_licenses", "office_desks"}
+               "sfdc_licenses", "office_desks", "li_navigator"}
 
 
 def all_lines():
@@ -58,35 +59,60 @@ def test_variable_lines_are_run_rated_and_fixed_lines_are_not():
     assert liquidity.project(line, None) == 21880.40
 
 
+def accounts(forecast):
+    return {a["id"]: a for a in forecast["accounts"]}
+
+
+def test_every_bill_debits_one_account():
+    f = liquidity.forecast({})
+    ids = [i for a in f["accounts"] for i in a["bill_ids"]]
+    assert sorted(ids) == sorted(b["id"] for b in f["bills"]) and len(f["accounts"]) == 3
+
+
 def test_unclassified_forecast_looks_safe():
-    t = liquidity.forecast({})["totals"]
-    assert t["unclassified_bills"] == 9 and t["variable_exposure"] == 0
-    assert t["low_point"] == {"balance": 81791.70, "date": "2026-11-03"} and t["first_breach"] is None
+    f = liquidity.forecast({})
+    t, a = f["totals"], accounts(f)
+    assert t["unclassified_bills"] == 11 and t["variable_exposure"] == 0
+    assert t["accounts_below_buffer"] == [] and t["first_breach"] is None
+    assert a["acct_operating"]["low_point"] == {"balance": 108337.45, "date": "2026-11-01"}
+    assert a["acct_cards"]["low_point"] == {"balance": 64154.25, "date": "2026-11-14"}
+    assert a["acct_marketing"]["low_point"] == {"balance": 22760.0, "date": "2026-11-06"}
 
 
-def test_classified_forecast_reveals_the_buffer_breach():
+def test_classified_forecast_reveals_the_buffer_breaches():
     f = liquidity.forecast(rules())
-    t = f["totals"]
+    t, a = f["totals"], accounts(f)
     assert t["unclassified_bills"] == 0
-    assert t["debits"] == 164359.09 and t["variable_exposure"] == 132221.09 and t["surprise"] == 69868.75
-    assert t["low_point"] == {"balance": 65880.54, "date": "2026-11-03"} and t["first_breach"] == "2026-11-03"
+    assert t["debits"] == 185405.76 and t["variable_exposure"] == 152267.76 and t["surprise"] == 75182.09
+    assert t["accounts_below_buffer"] == ["acct_cards", "acct_marketing"]
+    assert t["first_breach"] == {"date": "2026-11-03", "account_id": "acct_cards"}
+    assert a["acct_operating"]["first_breach"] is None and a["acct_operating"]["debits"] == 51109.97
+    assert a["acct_cards"]["first_breach"] == "2026-11-03" and a["acct_cards"]["debits"] == 80205.42
+    assert a["acct_marketing"]["first_breach"] == "2026-11-06" and a["acct_marketing"]["low_point"]["balance"] == 15909.63
     meta = next(b for b in f["bills"] if b["id"] == "bill_meta")
     assert meta["spike"] and meta["variable_lines"] == 2
 
 
 def test_timeline_is_in_date_order_with_outflows_first_on_each_day():
-    events = liquidity.forecast(rules())["timeline"]
-    keys = [(e["date"], e["amount"] > 0) for e in events]
-    assert keys == sorted(keys)
-    balance = liquidity.forecast({})["account"]["balance"]
-    for e in events:
-        balance = round(balance + e["amount"], 2)
-        assert e["balance_after"] == balance and e["below_buffer"] == (balance < 75000)
+    for acct in liquidity.forecast(rules())["accounts"]:
+        events = acct["timeline"]
+        keys = [(e["date"], e["amount"] > 0) for e in events]
+        assert keys == sorted(keys)
+        balance = acct["balance"]
+        for e in events:
+            balance = round(balance + e["amount"], 2)
+            assert e["balance_after"] == balance and e["below_buffer"] == (balance < acct["minimum_buffer"])
+
+
+def test_payroll_and_receipts_hit_the_operating_account_only():
+    a = accounts(liquidity.forecast({}))
+    flows = {k: [e["label"] for e in v["timeline"] if e["kind"] == "flow"] for k, v in a.items()}
+    assert len(flows["acct_operating"]) == 2 and flows["acct_cards"] == [] and flows["acct_marketing"] == []
 
 
 def test_unclassified_bills_are_marked_as_estimates():
-    events = liquidity.forecast({"slack_seats": False})["timeline"]
-    bills = {e["bill_id"]: e for e in events if e["kind"] == "bill"}
+    a = accounts(liquidity.forecast({"slack_seats": False}))
+    bills = {e["bill_id"]: e for e in a["acct_cards"]["timeline"] if e["kind"] == "bill"}
     assert bills["bill_slack"]["estimate"] is False and bills["bill_aws"]["estimate"] is True
 
 
