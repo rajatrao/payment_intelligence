@@ -24,8 +24,10 @@ class Settings:
     # PDF text and photos (exact checks then compare them with the transaction) and writes the dispute letter.
     llm_model: str = os.getenv("OLLAMA_LLM_MODEL", "gemma3:4b")
 
-    # Card Optimizer & Liquidity Guard (not yet available): structured-primitive endpoint. Declared here so the wiring is visible.
+    # Card Optimizer: Ollama's decision API (Ollama 0.35+). A decision model such as nimble answers choice questions
+    # with a probability per option. If it is unavailable, gemma3 structured outputs (/api/chat) are used instead.
     nimble_path: str = os.getenv("OLLAMA_NIMBLE_PATH", "/v1/systemone")
+    decision_model: str = os.getenv("OLLAMA_DECISION_MODEL", "nimble")
 
     request_timeout_s: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
     # Letter generation only: "false" fails the case instead of using the template letter.

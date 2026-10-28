@@ -1,7 +1,7 @@
 # Architecture Blueprint
 
-This document describes the system as built for the **Auto-Dispute Concierge** module, plus the extension points
-reserved for the **Card Optimizer** and **Liquidity Guard** modules. Diagrams are Mermaid and render on GitHub.
+This document describes the system as built for the **Auto-Dispute Concierge** and **Card Optimizer** modules,
+plus the extension points reserved for the **Liquidity Guard** module. Diagrams are Mermaid and render on GitHub.
 
 Contents
 
@@ -18,7 +18,7 @@ Contents
 11. [API reference](#11-api-reference)
 12. [Configuration](#12-configuration)
 13. [Failure modes and fallbacks](#13-failure-modes-and-fallbacks)
-14. [Module gating (Card Optimizer and Liquidity Guard)](#14-module-gating-card-optimizer-and-liquidity-guard)
+14. [Card Optimizer and module gating](#14-card-optimizer-and-module-gating)
 15. [Known limitations and review checklist](#15-known-limitations-and-review-checklist)
 
 ---
@@ -38,12 +38,12 @@ flowchart LR
             be["backend<br/>FastAPI + Uvicorn<br/>:8000"]
             vol[("chroma-data volume<br/>Chroma vector store")]
         end
-        ollama["Ollama<br/>:11434<br/>gemma3:4b · embeddinggemma-2"]
+        ollama["Ollama 0.35+<br/>:11434<br/>gemma3:4b · embeddinggemma-2 · nimble"]
     end
     user -- "HTTP :3000" --> fe
     fe -- "/api/* reverse proxy" --> be
     be -- "embedded client<br/>/data/chroma" --> vol
-    be -- "host.docker.internal:11434<br/>/api/embed · /api/generate" --> ollama
+    be -- "host.docker.internal:11434<br/>/api/embed · /api/generate · /api/chat · /v1/systemone" --> ollama
 ```
 
 ## 2. Containers and runtime
@@ -69,17 +69,19 @@ backend/app/
 ├── data/
 │   └── transactions/       Mock transaction files, named by feature
 │       ├── disputes.py         Auto-Dispute Concierge dataset (live)
-│       ├── cross_border.py     Card Optimizer dataset (provisioned, unused until unlocked)
+│       ├── cross_border.py     Card Optimizer dataset and card portfolio (live)
 │       └── recurring.py        Liquidity Guard dataset (provisioned, unused until unlocked)
 └── services/
     ├── extraction.py       File-type detection, PDF text layer (pypdf, no OCR), chunking
-    ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON field extraction
+    ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON, nimble decisions
     ├── fields.py           gemma3:4b reads merchant, total, date, reference, description from PDF text or a photo
     ├── vector_store.py     Chroma collection "evidence": embed each document once, store and reuse its vectors
     ├── matching.py         Facet × stored-chunk cosine matrix, field checks, composite score
     ├── letter.py           Compliance-officer prompt, filler scrubbing, offline template letter
     ├── pdf_builder.py      ReportLab: EUROSITES invoice + legal chargeback package, Exhibit A merge (pypdf)
-    └── samples.py          Sample evidence library: 5 documents that back a transaction, 3 decoys
+    ├── samples.py          Sample evidence library: 5 documents that back a transaction, 3 decoys
+    ├── corridor.py         Card Optimizer engine: normalise, corridor, friction, per-card fees, rule recommendation
+    └── card_optimizer.py   Decision-model recommendation (nimble), gemma3 and rule fallbacks
 ```
 
 ```mermaid
@@ -113,6 +115,10 @@ flowchart TB
     samples --> pdf
     routes -- "match + evidence search" --> vstore
     routes -- "match + evidence search" --> matching
+    corridor["corridor.py"]
+    optimizer["card_optimizer.py"]
+    routes -- "card-optimizer" --> corridor --> data
+    routes -- "recommend" --> optimizer --> ollama
 ```
 
 Concurrency notes
@@ -136,7 +142,7 @@ frontend/src/
 ├── api.js                      Fetch wrappers for every backend route
 ├── components/
 │   ├── Header.jsx              Brand, three tabs, live Ollama status badge (polls /api/health every 15 s)
-│   ├── LockWall.jsx            Blurred skeleton + lock overlay for Card Optimizer and Liquidity Guard
+│   ├── LockWall.jsx            Blurred skeleton + lock overlay for Liquidity Guard
 │   ├── Dropzone.jsx            Drag-and-drop / click upload, PDF (text matched) or JPEG (image matched)
 │   ├── SampleLibrary.jsx       Sample documents, Load / Download
 │   ├── EvidenceSearch.jsx      "Find evidence for this transaction": Chroma shortlist verified by gemma3
@@ -145,14 +151,19 @@ frontend/src/
 │   ├── MatchPanel.jsx          Score, sub-score bars, field checks, cosine heatmap
 │   └── Icons.jsx               Inline SVG icons
 └── modules/
-    └── AutoDisputeConcierge.jsx   Auto-Dispute Concierge view: queue, detail, evidence, match, PDF preview
+    ├── AutoDisputeConcierge.jsx   Auto-Dispute Concierge view: queue, detail, evidence, match, PDF preview
+    └── CardOptimizer.jsx          Card Optimizer view: totals, payment queue, recommendation, card options
 ```
 
 ```mermaid
 flowchart TB
     App --> Header
     App -->|"active = disputes"| ADC["AutoDisputeConcierge"]
-    App -->|"active = card-optimizer / liquidity-guard"| LockWall
+    App -->|"active = card-optimizer"| CO["CardOptimizer"]
+    App -->|"active = liquidity-guard"| LockWall
+    CO --> PQ["PaymentQueue"]
+    CO --> Rec["Recommendation"]
+    CO --> Opts["CardOptions"]
     ADC --> Queue["TransactionQueue"]
     ADC --> Detail["TransactionDetail"]
     ADC --> Dropzone
@@ -483,7 +494,9 @@ document counts under `vector_store`.
 | Dataset | Rows | Purpose |
 | --- | --- | --- |
 | `transactions/disputes.py` `DISPUTE_TRANSACTIONS` | 5 | Dispute-eligible card charges, all USD. Messy on purpose: descriptors differ from legal names (`SQ *`, `PAYPAL *`, `AMZN Mktp`), null department, `UNKNOWN` cardholder, empty memo, auth/post date drift. `txn_9f3a71c2` (EUROSITES, USD 18,450.00, 2026-09-15, Visa 13.1) matches the sample invoice. |
-| `transactions/cross_border.py` `CROSS_BORDER_TRANSACTIONS` | 4 | Cross-border payments with SCA soft declines, decline codes, FX fee bps. Kept in local currencies because FX is the point of the Card Optimizer. |
+| `transactions/cross_border.py` `CROSS_BORDER_TRANSACTIONS` | 8 | Cross-border card payments: SCA soft declines (Visa 1A, Mastercard 65), a regional MCC block (05), a pending 3DS challenge and settled payments that paid FX and cross-border fees. Messy on purpose: alpha-3 countries (`DEU`, `JPN`, `CAN`), lower-case currencies, amounts as strings with separators, null memos. Kept in local currencies because FX is the point of the Card Optimizer. |
+| `transactions/cross_border.py` `CARD_PORTFOLIO` | 5 | Company cards: US Visa and Mastercard (USD), an Irish lodged virtual card (EUR, corporate exemption), a UK Visa (GBP, corporate exemption), a Singapore multi-currency card (SGD, USD, AUD, JPY, INR). Each has FX and cross-border fees in basis points. |
+| `transactions/cross_border.py` `REGIONS`, `ALPHA3`, `FX_RATES_USD` | | Country-to-region map (NA, EU, APAC), alpha-3 to alpha-2 codes, mock mid-market rates to USD. |
 | `transactions/recurring.py` `RECURRING_TRANSACTIONS` | 4 | Recurring liabilities (AWS, GCP, Meta Ads, Slack) with prior 3-month averages, mixing variable usage lines and fixed seats. |
 
 ### Sample evidence library
@@ -639,7 +652,10 @@ Interactive docs: http://localhost:8000/docs
 | POST | `/api/disputes/cases` | Step 2. Multipart: `transaction_id`, `evidence_id`. Writes the letter and renders the package | `202` DisputeCase; 404; 409 if the match is WEAK |
 | GET | `/api/disputes/cases/{case_id}` | Poll case status | DisputeCase / 404 |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package, inline (`?download=true` for attachment) | `application/pdf` / 404 until ready |
-| GET, POST | `/api/card-optimizer/*`, `/api/liquidity-guard/*` | Locked modules | `423 {"locked": true, "detail": "…"}` |
+| GET | `/api/card-optimizer/payments` | `{cards, payments, recommendations}`: the portfolio, every payment's analysis (normalised transaction, corridor, signals, tags, current fee, per-card options, rule answer) and recommendations made so far | JSON |
+| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (Reset demo) | `{"cleared": n}` |
+| POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for the reason code and card (gemma3, then rules, as fallbacks); validated against the rule engine, savings computed by the engine | Recommendation JSON / 404 |
+| GET, POST | `/api/liquidity-guard/*` | Locked module | `423 {"locked": true, "detail": "…"}` |
 
 ## 12. Configuration
 
@@ -649,9 +665,10 @@ All settings are environment variables, read in `config.py` and passed through `
 | Variable | Default | Used by |
 | --- | --- | --- |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | All Ollama calls |
-| `OLLAMA_LLM_MODEL` | `gemma3:4b` | Field extraction (PDF text and photos) and letter generation |
+| `OLLAMA_LLM_MODEL` | `gemma3:4b` | Field extraction (PDF text and photos), letter generation, Card Optimizer fallback |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` | Matching, text and image (only model used; no fallback) |
-| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Reserved for Card Optimizer and Liquidity Guard |
+| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` | Ollama's decision API (Ollama 0.35+), Card Optimizer |
+| `OLLAMA_DECISION_MODEL` | `nimble` | Decision model for the Card Optimizer |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | All Ollama calls |
 | `ALLOW_OFFLINE_FALLBACK` | `true` | Letter only: `false` fails the case instead of using the template letter |
 | `CHROMA_DIR` | `/tmp/payment_intelligence/chroma` (`/data/chroma` in Docker, on the `chroma-data` volume) | Chroma vector store |
@@ -678,22 +695,121 @@ All settings are environment variables, read in `config.py` and passed through `
 | Backend restart | Match results, cases and packages lost (match again); stored embeddings survive in Chroma | 404 "match it again" |
 | `OLLAMA_EMBED_MODEL` changed | Stored vectors from the old model are ignored, deleted and re-embedded on next use | Match results say "embedded and stored in Chroma" |
 | Same file uploaded again | Vectors reused, only facets embedded | Match results say "reused from Chroma" |
+| Card Optimizer: Ollama older than 0.35 (no `/v1/systemone`) or `nimble` not pulled | gemma3 makes the choice through `/api/chat` with a JSON-schema `format` | "gemma3:4b via /api/chat" and a note saying why |
+| Card Optimizer: Ollama unavailable | The rule engine's answer is shown | "rules (models unavailable)" and the errors under the recommendation |
+| Card Optimizer: model picks a card the rule engine says can't clear the friction | The model's answer is still shown; no payment is counted as recovered | Amber warning naming the issue |
+| Card Optimizer: model disagrees with the rule engine | The model's answer is shown; the rule's answer is shown next to it | "Rule check: disagrees" note |
 
-## 14. Module gating (Card Optimizer and Liquidity Guard)
+## 14. Card Optimizer and module gating
+
+### How a recommendation is made
+
+```mermaid
+flowchart LR
+    feed["CROSS_BORDER_TRANSACTIONS<br/>messy issuer export"] --> norm["normalise()<br/>alpha-3 to alpha-2, currency case,<br/>amount strings, USD value"]
+    norm --> fric["friction()<br/>SCA challenge · regional block · failed"]
+    norm --> opts["card_options()<br/>fee and eligibility per card"]
+    fric --> opts
+    opts --> rule["rule_recommendation()"]
+    opts --> llm["nimble via /v1/systemone<br/>choice: reason code · choice: card"]
+    rule --> check["recommend()<br/>validate, compare, price"]
+    llm --> check
+    check --> ui["Recommendation card"]
+```
+
+1. **Normalise** (`corridor.normalise`). Country codes go to alpha-2, currency to upper case, amounts are parsed
+   from strings like `"76,500"`, and `amount_usd` is computed from `FX_RATES_USD`.
+2. **Friction** (`corridor.friction`). `sca_challenge`: decline code 1A or 65, or "3ds", "sca" or
+   "authentication" in the decline text. `regional_block`: code 05, 57 or 62, or "block" in the text (a block takes
+   precedence over an SCA reading). `failed`: status is not `SETTLED`.
+3. **Card options** (`corridor.card_options`). For each card, `fx_bps` is 0 if the card holds the payment
+   currency, else its FX fee. `cross_border_bps` applies when the card's issuer region differs from the merchant's.
+   `fee_usd = amount_usd × (fx_bps + cross_border_bps) / 10,000`. A card is ineligible, with the reason listed, if
+   it is the card that already failed, if an SCA challenge would recur (no corporate exemption in the merchant's
+   region), or if a regional block would recur (still inter-regional).
+4. **Rule answer** (`corridor.rule_recommendation`). Take the cheapest eligible card, then: SCA challenge →
+   `SCA_BYPASS_CORRIDOR`; regional block → `INTER-REGIONAL_ROUTING`; saving under `MIN_SAVING_USD` (10) →
+   `NO_CHANGE`; best card removes the FX fee → `FX_INTERBANK_MATCH`; otherwise `INTER-REGIONAL_ROUTING`. No
+   eligible card → `NO_CHANGE`.
+5. **Decision** (`card_optimizer.recommend`). The raw payment (decline code and text, status, corridor) goes to
+   Ollama's decision API as `state`, in two calls. First a `card` choice (one option per portfolio card,
+   described with facts only: issuer and region, currencies held, SCA exemption, fees on this payment, and whether
+   it already failed). Then, with the chosen switch added to the state as `proposed_switch` (from and to card,
+   and the FX and cross-border fee saving in USD), a
+   `reason_code` choice: which of the three codes, or `NO_CHANGE`, describes what the switch fixes. If nimble keeps
+   the current card, the answer is `NO_CHANGE` and there is no second call. Nothing in either request says which
+   answer is right; the model makes the judgement. See the request below.
+6. **Compare and price.** The model's answer is shown as given. The rule engine is a second opinion:
+   `agrees_with_rules` compares code and card, and a card the rule engine thinks can't clear the friction is
+   flagged. The action and rationale are written from the engine's facts, since a decision model writes no text. `fees_saved_usd` and `recovered_usd` come from `corridor.savings`, never the model:
+   for a failed payment, recovered is its USD amount when the card is eligible.
+
+Rule answers on the mock data:
+
+| Payment | Friction | Rule answer |
+| --- | --- | --- |
+| `txn_xb_01` OVH (FR, EUR, US Visa) | Declined 1A | `SCA_BYPASS_CORRIDOR` → IE lodged card |
+| `txn_xb_02` Hetzner (DE, EUR, US Mastercard) | Declined 65 | `SCA_BYPASS_CORRIDOR` → IE lodged card |
+| `txn_xb_03` Atlassian (AU, USD, US Visa) | Cross-border fee | `INTER-REGIONAL_ROUTING` → SG multi-currency |
+| `txn_xb_04` Zoho (IN, INR, UK Visa) | Declined 05, regional block | `INTER-REGIONAL_ROUTING` → SG multi-currency |
+| `txn_xb_05` Sakura (JP, JPY, US Mastercard) | FX + cross-border fees | `FX_INTERBANK_MATCH` → SG multi-currency |
+| `txn_xb_06` Bloomberg (GB, GBP, US Visa) | FX + cross-border fees | `FX_INTERBANK_MATCH` → UK Visa |
+| `txn_xb_07` Booking.com (NL, EUR, US Mastercard) | 3DS challenge pending | `SCA_BYPASS_CORRIDOR` → IE lodged card |
+| `txn_xb_08` Shopify (CA, CAD, US Visa) | Small FX fee | `NO_CHANGE` |
+
+### Decision API
+
+Full request and response examples and tests: [CARD_OPTIMIZER.md](CARD_OPTIMIZER.md).
+
+Ollama 0.35 added `POST /v1/systemone` for decision models (`ollama pull nimble`, a 9B model). A decision model
+only picks from the options it is given and returns a probability for each; it writes no text. Choice questions
+take 2 to 26 options, and the request must fit nimble's 8,192-token context. `ollama_client.decide` sends:
+
+```json
+{
+  "model": "nimble",
+  "state": {
+    "payment": {"merchant": "OVH SAS", "amount": 2310.4, "currency": "EUR", "status": "DECLINED",
+                "decline_code": "1A", "decline_text": "SCA_REQUIRED / soft decline - …"},
+    "corridor": "card issued in US (NA), merchant in FR (EU)",
+    "current_card": "Visa Corporate ****4471",
+    "current_card_fees": "3.00% FX + 1.00% cross-border = 99.81 USD"
+  },
+  "questions": {
+    "reason_code": {"type": "choice", "instructions": "This payment is being moved to the proposed card. Which reason code describes what the switch fixes?",
+                    "criteria": {"SCA_BYPASS_CORRIDOR": "…", "FX_INTERBANK_MATCH": "…",
+                                 "INTER-REGIONAL_ROUTING": "…", "NO_CHANGE": "…"}},
+    "card": {"type": "choice", "instructions": "Which company card should this payment be retried or paid on? …",
+             "criteria": {"card_eu_lodged": "Mastercard Lodged Virtual (IE) ****3310: issued in IE (EU, same region as the merchant), holds EUR, corporate SCA exemption: yes, fees on this payment 0.00% FX + 0.00% cross-border = 0.00 USD, 99.81 USD less than the current card", "…": "…"}}
+  }
+}
+```
+
+Fees are given in USD with the difference from the current card, so the model compares numbers rather than
+computing them. The `card` and `reason_code` questions above are sent in two separate calls, the second with
+`proposed_switch` added to the state. Asked together in one call, real nimble picked the right card for all 8
+payments but classified every settled one as `NO_CHANGE`, even when its own card saved 246 USD; classifying a
+concrete switch fixed that. It reads `answers.card.choice`, `answers.reason_code.choice`, their `probabilities`
+and `confidence`. The
+reason-code probabilities are shown as bars on the recommendation.
+
+Fallbacks: if Ollama returns 404 (Ollama older than 0.35, or `nimble` not pulled), `structured_chat` asks gemma3
+for the same two fields through `POST /api/chat` with a JSON-schema `format` (enums for the reason code and card
+id). If that fails too, the rule engine's answer is used. The model, route and fallback reason are returned and
+shown in the UI.
+
+### Module gating
 
 Locking is enforced in both layers:
 
-- **UI.** `MODULES` in `App.jsx` marks the Card Optimizer and Liquidity Guard `locked`. Their tabs show a lock icon and mount `LockWall`
-  (blurred skeleton plus overlay) with their lock messages.
-- **API.** A catch-all route returns `423 Locked` for any `/api/card-optimizer/*` or `/api/liquidity-guard/*` path.
+- **UI.** `MODULES` in `App.jsx` marks Liquidity Guard `locked`. Its tab shows a lock icon and mounts `LockWall`
+  (blurred skeleton plus overlay) with its lock message.
+- **API.** A catch-all route returns `423 Locked` for any `/api/liquidity-guard/*` path.
 
-Reserved for the locked modules, not wired yet:
+Reserved for Liquidity Guard, not wired yet:
 
-- `OLLAMA_NIMBLE_PATH=/v1/systemone` for structured-JSON primitives.
-- Card Optimizer reason codes `SCA_BYPASS_CORRIDOR`, `FX_INTERBANK_MATCH`, `INTER-REGIONAL_ROUTING` (only shown as
-  decoration in the lock wall).
-- Liquidity Guard boolean classification "variable usage-based consumption line".
-- Mock datasets in `data/transactions/cross_border.py` and `data/transactions/recurring.py`.
+- The boolean classification "variable usage-based consumption line", through the decision API (a `noul` question).
+- Mock dataset in `data/transactions/recurring.py`.
 
 To unlock a module: add its service module and routes, remove its key from `LOCKS` in `main.py`, set
 `locked: false` in `App.jsx`, and mount its view.
@@ -711,6 +827,7 @@ Limitations
 - No OCR engine: photos are embedded as images and read by gemma3; scanned PDFs are not rasterised.
 - gemma3:4b can misread a photo; photo values can't be cross-checked against a text layer.
 - Headless browsers don't render PDFs in iframes; desktop Chrome, Safari and Firefox do.
+- Card Optimizer fees, FX rates and the 10 USD threshold are mock values; recommendations are in memory.
 
 Suggested review points
 
@@ -720,3 +837,4 @@ Suggested review points
 4. Mock data realism (`data/transactions/`) and the sample documents (`services/samples.py`, `pdf_builder.py`).
 5. The package layout (`pdf_builder.py`, `build_chargeback_package`).
 6. Whether the Card Optimizer should keep foreign-currency data.
+7. The Card Optimizer card portfolio, eligibility rules and reason-code priority (`cross_border.py`, `corridor.py`).

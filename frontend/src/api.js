@@ -37,5 +37,10 @@ export const api = {
     return fetch(`${BASE}/api/disputes/cases`, { method: "POST", body: form }).then(json);
   },
   dispute: (caseId) => fetch(`${BASE}/api/disputes/cases/${caseId}`).then(json),
+  cardPayments: () => fetch(`${BASE}/api/card-optimizer/payments`).then(json),
+  recommendRoute: (paymentId) =>
+    fetch(`${BASE}/api/card-optimizer/payments/${paymentId}/recommend`, { method: "POST" }).then(json),
+  resetRecommendations: () =>
+    fetch(`${BASE}/api/card-optimizer/recommendations`, { method: "DELETE" }).then(json),
   packageUrl: (path, download = false) => `${BASE}${path}${download ? "?download=true" : ""}`,
 };

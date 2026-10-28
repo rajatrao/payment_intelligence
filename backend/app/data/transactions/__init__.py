@@ -1,7 +1,7 @@
 """Mock transaction datasets, one file per feature.
 
 - disputes.py      Auto-Dispute Concierge (live)
-- cross_border.py  Card Optimizer (locked)
+- cross_border.py  Card Optimizer (live)
 - recurring.py     Liquidity Guard (locked)
 """
 

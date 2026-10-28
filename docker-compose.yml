@@ -10,6 +10,7 @@ services:
       OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-gemma3:4b}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-embeddinggemma-2}
       OLLAMA_NIMBLE_PATH: ${OLLAMA_NIMBLE_PATH:-/v1/systemone}
+      OLLAMA_DECISION_MODEL: ${OLLAMA_DECISION_MODEL:-nimble}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
       ALLOW_OFFLINE_FALLBACK: ${ALLOW_OFFLINE_FALLBACK:-true}
       # Chroma vector store for evidence embeddings, kept on a named volume across restarts.

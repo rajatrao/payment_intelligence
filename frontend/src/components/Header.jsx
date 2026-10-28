@@ -25,7 +25,8 @@ function OllamaBadge() {
   return (
     <span className={`tag ${ready ? "tag-green" : "tag-amber"}`} title={o.base_url}>
       Ollama · {o.llm_model || `${health.config.llm_model} not installed`} ·{" "}
-      {o.embed_model || `${health.config.embed_model} not installed`}
+      {o.embed_model || `${health.config.embed_model} not installed`} ·{" "}
+      {o.decision_model || `${health.config.decision_model} not installed`}
     </span>
   );
 }

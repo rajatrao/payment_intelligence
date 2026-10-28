@@ -9,11 +9,12 @@ The product has three modules. Each one is unlocked only after the one before it
 | Module | What it does | Status |
 | --- | --- | --- |
 | **Auto-Dispute Concierge** | Matches uploaded evidence to a card transaction and generates a legal chargeback package | **Live** |
-| Smart-SCA Corridor Optimizer | Recommends routing around SCA challenges and FX fees | Locked (lock wall in UI, `423` from API) |
+| **Card Optimizer** | Recommends which corporate card to route a cross-border payment through, to clear SCA challenges and cut FX fees | **Live** |
 | Liquidity Guard | Flags variable usage-based liabilities before they auto-debit | Locked (lock wall in UI, `423` from API) |
 
 For the full blueprint (diagrams, data schemas, request flow, algorithms, API and configuration), see
-**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. The Card Optimizer and its decision-API requests are detailed in
+**[docs/CARD_OPTIMIZER.md](docs/CARD_OPTIMIZER.md)**.
 
 ## How the Auto-Dispute Concierge works
 
@@ -79,6 +80,37 @@ all.
 
 The Amazon transaction (`txn_c07e2b19`, card-absent fraud) deliberately has no supporting document.
 
+## How the Card Optimizer works
+
+The Card Optimizer takes a feed of cross-border card payments (some declined, some pending, some settled with
+heavy fees) and recommends which card in the company's portfolio each one should go through.
+
+1. **Normalise.** The feed is deliberately messy: alpha-3 country codes, lower-case currencies, amounts as strings
+   with thousands separators. Everything is cleaned and converted to USD first.
+2. **Corridor analysis (deterministic).** For each payment the engine works out the corridor (issuer country and
+   region to merchant country and region), the friction it hit (SCA challenge from decline codes 1A/65 or 3DS text,
+   regional block from codes 05/57/62, FX markup, cross-border fee) and, for every card, the fee it would cost and
+   whether it could actually clear the friction.
+3. **Decision model.** The raw payment (decline code and text, corridor) and a plain description of every card go to Ollama's decision API
+   (`POST /v1/systemone`, Ollama 0.35+) running the `nimble` decision model. It answers two choice questions, which
+   reason code and which card, with a probability for every option, so it can only ever return one of the codes
+   below and a card from the portfolio. Nothing tells it the right answer: the judgement is the model's. The UI
+   shows the probabilities. A decision model writes no text, so the
+   action and rationale are filled in from the engine's facts.
+4. **Compare and price.** The model's answer is shown as given, next to a rule engine's answer as a second
+   opinion. Disagreements are highlighted, never overwritten. Fees saved and payment volume recovered are always
+   computed by the engine, never by the model.
+5. **Fallbacks.** If the decision API or `nimble` is missing, gemma3 makes the same choice through Ollama's
+   structured outputs (`/api/chat` with a JSON schema). If Ollama is unavailable, the rule engine's answer is
+   shown. Each recommendation shows the model and route used, and why a fallback was taken.
+
+| Reason code | When |
+| --- | --- |
+| `SCA_BYPASS_CORRIDOR` | The payment hit a 3DS/SCA challenge; route it through a same-region card enrolled in the secure corporate payment exemption |
+| `FX_INTERBANK_MATCH` | A card already holds the payment currency, so the FX markup disappears |
+| `INTER-REGIONAL_ROUTING` | A regional block or cross-border fee can be avoided with a card issued in the merchant's region |
+| `NO_CHANGE` | No card saves at least 10 USD, or nothing in the portfolio clears the friction |
+
 ## Local setup
 
 Everything runs on your machine. The app runs in Docker; Ollama runs natively on the host so it can use your GPU
@@ -89,8 +121,8 @@ Everything runs on your machine. The app runs in Docker; Ollama runs natively on
 | Tool | Version | Check |
 | --- | --- | --- |
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose v2) | Compose v2 | `docker compose version` |
-| [Ollama](https://ollama.com/download) | recent enough to list `embeddinggemma-2` | `ollama --version` |
-| Disk space for models | ~5 GB (gemma3:4b ≈ 3.3 GB, embeddinggemma-2 ≈ 1.3 GB) | |
+| [Ollama](https://ollama.com/download) | 0.35 or newer (decision API for the Card Optimizer) | `ollama --version` |
+| Disk space for models | ~15 GB (gemma3:4b ≈ 3.3 GB, embeddinggemma-2 ≈ 1.3 GB, nimble ≈ 9.4 GB) | |
 
 ### 2. Start Ollama and pull the models
 
@@ -101,8 +133,9 @@ ollama serve
 # In another terminal:
 ollama pull gemma3:4b          # reads fields from PDFs and photos, writes the letter
 ollama pull embeddinggemma-2   # EmbeddingGemma 2: text + image embeddings for search and matching
+ollama pull nimble             # decision model for the Card Optimizer (/v1/systemone)
 
-# Confirm both models are installed and the API answers:
+# Confirm the models are installed and the API answers:
 curl http://localhost:11434/api/tags
 ```
 
@@ -134,9 +167,9 @@ docker compose up --build
 
 ### 5. Verify the Ollama connection
 
-- The badge at the top right of the dashboard turns **green** and shows both model names.
+- The badge at the top right of the dashboard turns **green** and shows the model names.
 - Or check the API: `curl http://localhost:8000/api/health` should show `"reachable": true` with `llm_model` and
-  `embed_model` filled in.
+  `embed_model` filled in (and `decision_model` for the Card Optimizer).
 - Select a transaction and click **Search** under **Find evidence for this transaction**: the matching document
   should rank first.
 
@@ -152,6 +185,7 @@ docker compose up --build
 | JPEG case fails with an Ollama error | Check you're using an image-capable tag (default, `:740m` or `:440m`), and update Ollama. |
 | Package says "Template letter", or the match panel shows no "read" values | gemma3 isn't installed: `ollama pull gemma3:4b`. Set `ALLOW_OFFLINE_FALLBACK=false` to fail instead of using the template letter. |
 | Matching or letters are slow or time out | The first read of each file takes a few seconds on gemma3:4b; later matches use the cache. Raise `OLLAMA_TIMEOUT_SECONDS` in `.env` on slower machines. |
+| Card Optimizer shows "gemma3:4b via /api/chat" instead of "nimble via /v1/systemone" | The note under the recommendation says why. Update Ollama to 0.35+ and run `ollama pull nimble`. |
 | Port 3000 or 8000 already in use | Change the left side of the `ports` mappings in `docker-compose.yml`. |
 
 Matching requires EmbeddingGemma 2: if Ollama or the model is unavailable, the case fails with a clear error rather
@@ -171,7 +205,13 @@ back to the embedding alone, and the package is built with a clearly labelled te
 6. Select **SQ \*NORTHWIND EVENTS** in the queue and click **Search** under **Find evidence for this transaction**:
    Chroma shortlists stored files, gemma3 verifies them, and the receipt and its photo rank first. Click **Use** to
    load one.
-7. Click the Card Optimizer and Liquidity Guard tabs to see the lock walls.
+7. Open the **Card Optimizer** tab. Select the declined **OVH** payment and click **Recommend route**: it should
+   come back as `SCA_BYPASS_CORRIDOR` on the Irish lodged card, with the decision probabilities and the payment
+   amount recovered.
+8. Click **Analyze all payments** to fill in the whole queue, then compare the header totals for fees paid,
+   recovered volume and fees saved. The card options table shows why each card is or isn't eligible. Click
+   **Reset demo** to clear the recommendations and start again.
+9. Click the Liquidity Guard tab to see the lock wall.
 
 ## Configuration
 
@@ -182,7 +222,8 @@ Copy `.env.example` to `.env` to override anything. The main settings:
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` |
 | `OLLAMA_LLM_MODEL` | `gemma3:4b` (vision-capable: reads evidence fields and writes the letter) |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` (the only model used for matching; keep an image-capable tag: latest/`:740m` or `:440m`) |
-| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` (reserved for Card Optimizer and Liquidity Guard) |
+| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` (Ollama's decision API, used by the Card Optimizer) |
+| `OLLAMA_DECISION_MODEL` | `nimble` (decision model; if missing, gemma3 structured outputs are used instead) |
 | `ALLOW_OFFLINE_FALLBACK` | `true` (letter only: template letter if gemma3 is missing) |
 | `CHROMA_DIR` | `/data/chroma` in Docker (named volume `chroma-data`); `/tmp/payment_intelligence/chroma` without Docker |
 
@@ -204,7 +245,7 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 │       ├── config.py           env-driven settings
 │       ├── data/transactions/  mock transaction files: disputes, cross_border, recurring
 │       └── services/           extraction, ollama_client, vector_store (Chroma), matching, letter,
-│                               pdf_builder, samples
+│                               pdf_builder, samples, corridor (card engine), card_optimizer (decision model)
 └── frontend/                   React 18 · Vite · Tailwind CSS 3
     ├── Dockerfile              node build → nginx runtime
     ├── nginx.conf              serves the SPA, proxies /api to the backend
@@ -212,7 +253,7 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
         ├── App.jsx             tab registry and routing
         ├── api.js              backend client
         ├── components/         Header, LockWall, Dropzone, PipelineStages, MatchPanel, Icons
-        └── modules/            AutoDisputeConcierge
+        └── modules/            AutoDisputeConcierge, CardOptimizer
 ```
 
 ## API at a glance
@@ -228,7 +269,10 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | POST | `/api/disputes/cases` | Step 2: build the letter and package (`transaction_id` + `evidence_id`) |
 | GET | `/api/disputes/cases/{case_id}` | Poll case status and results |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package (`?download=true` to download) |
-| * | `/api/card-optimizer/*`, `/api/liquidity-guard/*` | `423 Locked` |
+| GET | `/api/card-optimizer/payments` | Card portfolio, analysed cross-border payments and any recommendations so far |
+| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (the **Reset demo** button) |
+| POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for a reason code and card (checked against the rule engine) |
+| * | `/api/liquidity-guard/*` | `423 Locked` |
 
 ## Local development without Docker
 
@@ -247,6 +291,15 @@ npm install
 npm run dev
 ```
 
+## Tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest -q          # no Ollama needed: model calls are faked
+python3 ../scripts/check_card_decisions.py   # with the app running: Card Optimizer on the real models
+```
+
 ## Current limitations
 
 - Dispute cases and generated PDFs live in memory and are cleared when the backend restarts; only evidence
@@ -259,6 +312,8 @@ npm run dev
   with `scripts/check_image_embeddings.py`.
 - No OCR engine: a scanned PDF has no text layer and isn't rasterised, so upload it as a JPEG to have gemma3 read
   it as a photo.
+- Card Optimizer FX rates, card fees and the 10 USD saving threshold are mock values in
+  `backend/app/data/transactions/cross_border.py`; recommendations are kept in memory.
 - No authentication; this is a local demo.
 - Stored vectors are tagged with the embedding model name and re-embedded if `OLLAMA_EMBED_MODEL` changes. To
   wipe them, run `docker compose down -v` (removes the `chroma-data` volume).
