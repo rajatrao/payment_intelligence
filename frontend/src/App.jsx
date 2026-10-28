@@ -3,17 +3,12 @@ import Header from "./components/Header.jsx";
 import LockWall from "./components/LockWall.jsx";
 import AutoDisputeConcierge from "./modules/AutoDisputeConcierge.jsx";
 import CardOptimizer from "./modules/CardOptimizer.jsx";
+import LiquidityGuard from "./modules/LiquidityGuard.jsx";
 
 export const MODULES = [
   { id: "disputes", label: "Auto-Dispute Concierge", locked: false },
   { id: "card-optimizer", label: "Card Optimizer", locked: false },
-  {
-    id: "liquidity-guard",
-    label: "Liquidity Guard",
-    locked: true,
-    lockMessage: "Liquidity Guard pipeline locked until the Card Optimizer review is validated.",
-    preview: ["AWS usage", "Google Cloud", "Meta Ads"],
-  },
+  { id: "liquidity-guard", label: "Liquidity Guard", locked: false },
 ];
 
 export default function App() {
@@ -28,6 +23,8 @@ export default function App() {
           <LockWall key={module.id} module={module} />
         ) : module.id === "card-optimizer" ? (
           <CardOptimizer />
+        ) : module.id === "liquidity-guard" ? (
+          <LiquidityGuard />
         ) : (
           <AutoDisputeConcierge />
         )}

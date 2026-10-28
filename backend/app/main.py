@@ -3,7 +3,7 @@
 Modules:
 - Auto-Dispute Concierge (/api/disputes): live.
 - Card Optimizer (/api/card-optimizer): live.
-- Liquidity Guard (/api/liquidity-guard): not yet available; responds 423.
+- Liquidity Guard (/api/liquidity-guard): live.
 """
 
 import asyncio
@@ -28,6 +28,8 @@ from app.services import vector_store
 from app.services.card_optimizer import recommend
 from app.services.corridor import all_analyses, get_analysis
 from app.data.transactions.cross_border import CARD_PORTFOLIO
+from app.services import liquidity
+from app.services.liquidity_guard import classify, flat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("api")
@@ -40,9 +42,8 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 PIPELINE_STAGES = ["generate_letter", "render_pdf"]
 MAX_EVIDENCE = 50
 BUILDABLE_VERDICTS = {"STRONG_MATCH", "PARTIAL_MATCH"}
-LOCKS = {
-    "liquidity-guard": "The Liquidity Guard module is not available yet.",
-}
+# Modules not yet available: their routes answer 423 (see locked_module). All modules are live now.
+LOCKS: dict[str, str] = {}
 
 # In-memory stores; fine for a single-process local demo. Evidence vectors live in Chroma.
 EVIDENCE: dict[str, dict] = {}
@@ -73,7 +74,7 @@ async def modules():
     return [
         {"id": "disputes", "name": "Auto-Dispute Concierge", "locked": False},
         {"id": "card-optimizer", "name": "Card Optimizer", "locked": False},
-        {"id": "liquidity-guard", "name": "Liquidity Guard", "locked": True, "lock_message": LOCKS["liquidity-guard"]},
+        {"id": "liquidity-guard", "name": "Liquidity Guard", "locked": False},
     ]
 
 
@@ -359,6 +360,35 @@ async def card_optimizer_recommend(payment_id: str):
         raise HTTPException(404, "Payment not found")
     RECOMMENDATIONS[payment_id] = await recommend(analysis)
     return RECOMMENDATIONS[payment_id]
+
+
+# ---------------------------------------------------------------- liquidity guard
+
+CLASSIFICATIONS: dict[str, dict] = {}
+
+
+@app.get("/api/liquidity-guard/bills")
+async def liquidity_bills():
+    """Upcoming auto-debits with per-line forecasts, the cash timeline and any line classifications made."""
+    return {"forecast": liquidity.forecast(flat(CLASSIFICATIONS)), "classifications": CLASSIFICATIONS}
+
+
+@app.post("/api/liquidity-guard/bills/{bill_id}/classify")
+async def liquidity_classify(bill_id: str):
+    """Ask the decision model (nimble) which lines are variable usage-based consumption; refresh the forecast."""
+    bill = liquidity.get_bill(bill_id)
+    if not bill:
+        raise HTTPException(404, "Bill not found")
+    CLASSIFICATIONS[bill_id] = await classify(bill)
+    return {"classification": CLASSIFICATIONS[bill_id], "forecast": liquidity.forecast(flat(CLASSIFICATIONS))}
+
+
+@app.delete("/api/liquidity-guard/classifications")
+async def liquidity_reset():
+    """Clear every classification so the demo can be run again."""
+    cleared = len(CLASSIFICATIONS)
+    CLASSIFICATIONS.clear()
+    return {"cleared": cleared}
 
 
 # ---------------------------------------------------------------- locked modules

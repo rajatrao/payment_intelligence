@@ -1,10 +1,10 @@
-"""Card Optimizer HTTP routes, with the decision model faked."""
+"""Card Optimizer and Liquidity Guard HTTP routes, with the decision model faked."""
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.services import card_optimizer
+from app.services import card_optimizer, liquidity_guard
 
 
 @pytest.fixture
@@ -14,8 +14,14 @@ def client(monkeypatch):
         choice = "card_eu_lodged" if name == "card" else "SCA_BYPASS_CORRIDOR"
         return {name: {"type": "choice", "choice": choice, "probabilities": {choice: 1.0}, "confidence": 1.0}}
 
+    async def nimble_lines(state, questions):
+        return {i: {"type": "noul", "noul": 0.9 if "on-demand" in q["instructions"].lower() else 0.1}
+                for i, q in questions.items()}
+
     monkeypatch.setattr(card_optimizer, "decide", nimble)
+    monkeypatch.setattr(liquidity_guard, "decide", nimble_lines)
     main.RECOMMENDATIONS.clear()
+    main.CLASSIFICATIONS.clear()
     return TestClient(main.app)
 
 
@@ -43,5 +49,37 @@ def test_unknown_payment_is_404(client):
     assert client.post("/api/card-optimizer/payments/nope/recommend").status_code == 404
 
 
-def test_liquidity_guard_is_still_locked(client):
-    assert client.get("/api/liquidity-guard/anything").status_code == 423
+def test_unknown_module_route_is_404_not_locked(client):
+    assert client.get("/api/liquidity-guard/anything").status_code == 404
+
+
+def test_modules_list_liquidity_guard_as_live(client):
+    mods = {m["id"]: m for m in client.get("/api/modules").json()}
+    assert mods["liquidity-guard"]["locked"] is False
+
+
+def test_bills_start_unclassified(client):
+    body = client.get("/api/liquidity-guard/bills").json()
+    assert body["classifications"] == {} and len(body["forecast"]["bills"]) == 11
+    assert body["forecast"]["totals"]["unclassified_bills"] == 11 and len(body["forecast"]["accounts"]) == 3
+
+
+def test_classify_stores_the_result_and_updates_the_forecast(client):
+    body = client.post("/api/liquidity-guard/bills/bill_aws/classify").json()
+    c = body["classification"]
+    assert c["route"] == "/v1/systemone" and c["lines"]["aws_ec2"]["variable"] is True
+    assert c["lines"]["aws_savings_plan"]["variable"] is False
+    aws = next(b for b in body["forecast"]["bills"] if b["id"] == "bill_aws")
+    assert aws["classified"] and body["forecast"]["totals"]["unclassified_bills"] == 10
+    assert client.get("/api/liquidity-guard/bills").json()["classifications"]["bill_aws"] == c
+
+
+def test_reset_clears_every_classification(client):
+    client.post("/api/liquidity-guard/bills/bill_aws/classify")
+    client.post("/api/liquidity-guard/bills/bill_gcp/classify")
+    assert client.delete("/api/liquidity-guard/classifications").json() == {"cleared": 2}
+    assert client.get("/api/liquidity-guard/bills").json()["classifications"] == {}
+
+
+def test_unknown_bill_is_404(client):
+    assert client.post("/api/liquidity-guard/bills/nope/classify").status_code == 404

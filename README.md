@@ -4,17 +4,18 @@ An all-in-one payment intelligence and treasury optimization dashboard for finan
 machine: a React frontend and a FastAPI backend in Docker, with local models served by Ollama. No data leaves
 the machine and there are no third-party integrations.
 
-The product has three modules. Each one is unlocked only after the one before it has been reviewed.
+The product has three modules, all live.
 
 | Module | What it does | Status |
 | --- | --- | --- |
 | **Auto-Dispute Concierge** | Matches uploaded evidence to a card transaction and generates a legal chargeback package | **Live** |
 | **Card Optimizer** | Recommends which corporate card to route a cross-border payment through, to clear SCA challenges and cut FX fees | **Live** |
-| Liquidity Guard | Flags variable usage-based liabilities before they auto-debit | Locked (lock wall in UI, `423` from API) |
+| **Liquidity Guard** | Flags variable usage-based liabilities (AWS, GCP, Meta Ads) before they auto-debit and forecasts each account's cash low point | **Live** |
 
 For the full blueprint (diagrams, data schemas, request flow, algorithms, API and configuration), see
-**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. The Card Optimizer and its decision-API requests are detailed in
-**[docs/CARD_OPTIMIZER.md](docs/CARD_OPTIMIZER.md)**.
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. The Card Optimizer and the Liquidity Guard, with their decision-API
+requests, are detailed in **[docs/CARD_OPTIMIZER.md](docs/CARD_OPTIMIZER.md)** and
+**[docs/LIQUIDITY_GUARD.md](docs/LIQUIDITY_GUARD.md)**.
 
 ## How the Auto-Dispute Concierge works
 
@@ -110,6 +111,35 @@ heavy fees) and recommends which card in the company's portfolio each one should
 | `FX_INTERBANK_MATCH` | A card already holds the payment currency, so the FX markup disappears |
 | `INTER-REGIONAL_ROUTING` | A regional block or cross-border fee can be avoided with a card issued in the merchant's region |
 | `NO_CHANGE` | No card saves at least 10 USD, or nothing in the portfolio clears the friction |
+
+## How the Liquidity Guard works
+
+The Liquidity Guard looks at the vendor bills that will auto-debit the company's bank accounts in the next few days
+and asks which of them are hiding a usage-based charge that is still growing.
+
+1. **Bills and accounts.** Eleven October statements (AWS, Google Cloud, Meta Ads, Google Ads, LinkedIn, Snowflake,
+   Twilio, Datadog, Slack, Salesforce and a coworking office), captured on 28 Oct with 27 of 31 days elapsed. Each
+   bill debits one of three accounts: the operating account, the card settlement account and the marketing account.
+   Each bill mixes fixed lines (seats, licences, commitments) with metered lines, and the line text is copied
+   straight from the invoice.
+2. **Decision model.** For each bill, one request goes to Ollama's decision API (`POST /v1/systemone`, model
+   `nimble`) with one `noul` question per line: "Is this a variable usage-based consumption line?". Each question
+   carries only the invoice line text, its last three charges and the amount billed so far. nimble returns a
+   probability per line; 0.5 or more counts as variable. Nothing tells it the answer.
+3. **Forecast (deterministic).** The classification decides how each line is forecast. A variable line's
+   month-to-date amount is run-rated to the full cycle (amount × 31 / 27); a fixed line is charged as billed. A
+   variable line forecast at more than 1.25× its three-cycle average is flagged as a spike.
+4. **Accounts and cash timeline.** Each account card shows a donut of its bills that grows as they are classified.
+   Every auto-debit, plus payroll and a known customer receipt, is laid on its account's timeline against that
+   account's balance and minimum buffer. The UI shows each account's low point and the first day it falls below
+   its buffer.
+5. **Compare and fall back.** A keyword rule gives a second opinion on every line; disagreements are shown, never
+   overwritten. If the decision API or nimble is missing, gemma3 answers true/false per line through structured
+   outputs, and if Ollama is unavailable the rule's answer is used. Each bill shows the model and route used.
+
+Before classification the forecast only counts what has been billed so far, and every account looks safe.
+Classifying the bills shows the usage lines will keep growing to the end of the cycle: the card settlement account
+drops below its buffer on 3 Nov and the marketing account on 6 Nov, while the operating account stays safe.
 
 ## Local setup
 
@@ -210,8 +240,15 @@ back to the embedding alone, and the package is built with a clearly labelled te
    amount recovered.
 8. Click **Analyze all payments** to fill in the whole queue, then compare the header totals for fees paid,
    recovered volume and fees saved. The card options table shows why each card is or isn't eligible. Click
-   **Reset demo** to clear the recommendations and start again.
-9. Click the Liquidity Guard tab to see the lock wall.
+   **Reset** to clear the recommendations and start again.
+9. Open the **Liquidity Guard** tab. Every bill is marked "not classified", the donuts are faded and all three
+   accounts stay above their buffers. Hover any Forecast value to see its line-by-line breakdown: before
+   classification it is just what is billed so far. Select **Amazon Web Services** and click **Classify lines**: nimble marks the EC2, data transfer,
+   Bedrock and support lines as variable and the savings plan as fixed, with a probability for each.
+10. Click an account card: the bill list and cash timeline show only that account. Click **Classify all bills** to
+    classify that account's bills; its donut fills in and grows as each one is classified. Do the same for each
+    account: Meta Ads and AWS are flagged as spikes, card settlement falls below its buffer on 3 Nov and marketing
+    on 6 Nov, while the operating account stays safe. Click **Reset** to start again.
 
 ## Configuration
 
@@ -222,7 +259,7 @@ Copy `.env.example` to `.env` to override anything. The main settings:
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` |
 | `OLLAMA_LLM_MODEL` | `gemma3:4b` (vision-capable: reads evidence fields and writes the letter) |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma-2` (the only model used for matching; keep an image-capable tag: latest/`:740m` or `:440m`) |
-| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` (Ollama's decision API, used by the Card Optimizer) |
+| `OLLAMA_NIMBLE_PATH` | `/v1/systemone` (Ollama's decision API, used by the Card Optimizer and the Liquidity Guard) |
 | `OLLAMA_DECISION_MODEL` | `nimble` (decision model; if missing, gemma3 structured outputs are used instead) |
 | `ALLOW_OFFLINE_FALLBACK` | `true` (letter only: template letter if gemma3 is missing) |
 | `CHROMA_DIR` | `/data/chroma` in Docker (named volume `chroma-data`); `/tmp/payment_intelligence/chroma` without Docker |
@@ -235,8 +272,8 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 .
 ├── docker-compose.yml          backend + frontend services
 ├── .env.example                configuration overrides
-├── docs/ARCHITECTURE.md        architecture blueprint
-├── scripts/                    check_image_embeddings.py: verify and tune image matching on real Ollama
+├── docs/                       ARCHITECTURE.md (blueprint), CARD_OPTIMIZER.md, LIQUIDITY_GUARD.md
+├── scripts/                    checks against real Ollama: image embeddings, card and liquidity decisions
 ├── backend/                    Python 3.12 · FastAPI
 │   ├── Dockerfile              python:3.12-slim
 │   ├── requirements.txt
@@ -245,7 +282,8 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 │       ├── config.py           env-driven settings
 │       ├── data/transactions/  mock transaction files: disputes, cross_border, recurring
 │       └── services/           extraction, ollama_client, vector_store (Chroma), matching, letter,
-│                               pdf_builder, samples, corridor (card engine), card_optimizer (decision model)
+│                               pdf_builder, samples, corridor (card engine), card_optimizer (decision model),
+│                               liquidity (forecast engine), liquidity_guard (line classification)
 └── frontend/                   React 18 · Vite · Tailwind CSS 3
     ├── Dockerfile              node build → nginx runtime
     ├── nginx.conf              serves the SPA, proxies /api to the backend
@@ -253,7 +291,7 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
         ├── App.jsx             tab registry and routing
         ├── api.js              backend client
         ├── components/         Header, LockWall, Dropzone, PipelineStages, MatchPanel, Icons
-        └── modules/            AutoDisputeConcierge, CardOptimizer
+        └── modules/            AutoDisputeConcierge, CardOptimizer, LiquidityGuard
 ```
 
 ## API at a glance
@@ -270,9 +308,11 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | GET | `/api/disputes/cases/{case_id}` | Poll case status and results |
 | GET | `/api/disputes/cases/{case_id}/package.pdf` | Generated package (`?download=true` to download) |
 | GET | `/api/card-optimizer/payments` | Card portfolio, analysed cross-border payments and any recommendations so far |
-| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (the **Reset demo** button) |
+| DELETE | `/api/card-optimizer/recommendations` | Clear all recommendations (the **Reset** button) |
 | POST | `/api/card-optimizer/payments/{id}/recommend` | Ask the decision model for a reason code and card (checked against the rule engine) |
-| * | `/api/liquidity-guard/*` | `423 Locked` |
+| GET | `/api/liquidity-guard/bills` | Upcoming bills with line forecasts, the cash timeline, totals and classifications so far |
+| POST | `/api/liquidity-guard/bills/{id}/classify` | Ask the decision model which lines are variable usage-based (checked against the rule) |
+| DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (the **Reset** button) |
 
 ## Local development without Docker
 
@@ -297,7 +337,8 @@ npm run dev
 cd backend
 pip install -r requirements-dev.txt
 python -m pytest -q          # no Ollama needed: model calls are faked
-python3 ../scripts/check_card_decisions.py   # with the app running: Card Optimizer on the real models
+python3 ../scripts/check_card_decisions.py        # with the app running: Card Optimizer on the real models
+python3 ../scripts/check_liquidity_decisions.py   # with the app running: Liquidity Guard on the real models
 ```
 
 ## Current limitations
@@ -314,6 +355,9 @@ python3 ../scripts/check_card_decisions.py   # with the app running: Card Optimi
   it as a photo.
 - Card Optimizer FX rates, card fees and the 10 USD saving threshold are mock values in
   `backend/app/data/transactions/cross_border.py`; recommendations are kept in memory.
+- Liquidity Guard bills, balance, buffer and cash flows are mock values in
+  `backend/app/data/transactions/recurring.py`; the forecast is a straight-line run-rate, and classifications are
+  kept in memory.
 - No authentication; this is a local demo.
 - Stored vectors are tagged with the embedding model name and re-embedded if `OLLAMA_EMBED_MODEL` changes. To
   wipe them, run `docker compose down -v` (removes the `chroma-data` volume).
