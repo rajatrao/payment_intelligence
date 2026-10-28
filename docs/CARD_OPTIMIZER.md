@@ -1,22 +1,19 @@
 # Card Optimizer Blueprint
 
-Review guide for the Card Optimizer module (branch `card-optimizer`). It covers what changed, how a
-recommendation is made, exactly what is sent to Ollama's decision API and what comes back, why it is built this
-way, and how it is tested. For the whole system see [ARCHITECTURE.md](ARCHITECTURE.md).
+Guide to the Card Optimizer module: how a recommendation is made, exactly what is sent to Ollama's decision API
+and what comes back, and how it is tested. For the whole system see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Contents
 
 1. [What the module does](#1-what-the-module-does)
-2. [Changes on this branch](#2-changes-on-this-branch)
-3. [End-to-end flow](#3-end-to-end-flow)
-4. [Corridor engine (deterministic)](#4-corridor-engine-deterministic)
-5. [Decision API interaction](#5-decision-api-interaction)
-6. [How the answer is used](#6-how-the-answer-is-used)
-7. [Fallbacks and errors](#7-fallbacks-and-errors)
-8. [Design decisions and real-model results](#8-design-decisions-and-real-model-results)
-9. [API contract](#9-api-contract)
-10. [Tests](#10-tests)
-11. [Review checklist and limitations](#11-review-checklist-and-limitations)
+2. [End-to-end flow](#2-end-to-end-flow)
+3. [Corridor engine (deterministic)](#3-corridor-engine-deterministic)
+4. [Decision API interaction](#4-decision-api-interaction)
+5. [How the answer is used](#5-how-the-answer-is-used)
+6. [Fallbacks and errors](#6-fallbacks-and-errors)
+7. [API contract](#7-api-contract)
+8. [Tests](#8-tests)
+9. [Review checklist and limitations](#9-review-checklist-and-limitations)
 
 ---
 
@@ -37,39 +34,7 @@ The **judgement** (which card, which code) is made by the `nimble` decision mode
 The **arithmetic** (fees, savings, recovered volume) is done by plain code. A deterministic rule engine gives a
 second opinion that is shown next to the model's answer but never replaces it.
 
-## 2. Changes on this branch
-
-Commits on `card-optimizer` since `main`:
-
-| Commit | Change |
-| --- | --- |
-| `a7cc558` | Add Card Optimizer module: data, corridor engine, gemma3 structured recommendation, API, UI |
-| `b183ed0` | Use Ollama's decision API (`/v1/systemone`, `nimble`) with gemma3 and rules as fallbacks |
-| `f4624c5` | Precomputed facts and a NO_CHANGE override (reverted in the next commit) |
-| `3f55f33` | Let the decision model judge unaided: raw facts only, no overrides |
-| `5edbe3f` | Make SCA and inter-regional reason codes describe distinct causes |
-| `1548ef4` | Separate FX and inter-regional reason codes by cause |
-| `3e1193d` | Add `scripts/check_card_decisions.py` to compare nimble with the rules |
-| `3d4e5e8` | Two-step decision: pick the card, then classify the switch |
-| `d21d6f0` | Show nimble the FX and cross-border parts of each switch's saving |
-
-Files:
-
-| File | Status | Purpose |
-| --- | --- | --- |
-| `backend/app/data/transactions/cross_border.py` | rewritten | 8 messy cross-border payments, 5-card portfolio, regions, alpha-3 map, mock FX rates |
-| `backend/app/services/corridor.py` | new | Normalise, corridor, friction, per-card fees and eligibility, rule answer, savings |
-| `backend/app/services/card_optimizer.py` | new | Builds the decision requests, runs the two-step decision, fallbacks, response |
-| `backend/app/services/ollama_client.py` | changed | `decide()` for `/v1/systemone`; `structured_chat()` for gemma3 `/api/chat`; decision model in status |
-| `backend/app/config.py` | changed | `OLLAMA_NIMBLE_PATH`, new `OLLAMA_DECISION_MODEL` (default `nimble`) |
-| `backend/app/main.py` | changed | `/api/card-optimizer/*` routes; module unlocked; decision model in `/api/health` |
-| `frontend/src/modules/CardOptimizer.jsx` | new | Totals, payment queue, recommendation with probability bars, card options table |
-| `frontend/src/App.jsx`, `api.js`, `components/Header.jsx` | changed | Tab unlocked, API calls, nimble in the status badge |
-| `backend/tests/*` | new | 46 tests (section 10) |
-| `scripts/check_card_decisions.py` | new | Runs all payments through the live backend and prints model vs rules |
-| `README.md`, `docs/ARCHITECTURE.md`, `.env.example`, `docker-compose.yml` | changed | Setup (`ollama pull nimble`, Ollama 0.35+), config, docs |
-
-## 3. End-to-end flow
+## 2. End-to-end flow
 
 ```mermaid
 sequenceDiagram
@@ -94,7 +59,7 @@ sequenceDiagram
 
 If nimble keeps the current card in call 1, the answer is `NO_CHANGE` and call 2 is skipped.
 
-## 4. Corridor engine (deterministic)
+## 3. Corridor engine (deterministic)
 
 `corridor.py` turns each raw payment into facts. Nothing here calls a model.
 
@@ -113,7 +78,7 @@ If nimble keeps the current card in call 1, the answer is `NO_CHANGE` and call 2
 6. **Savings** (`savings`). Fees saved = current card fee − chosen card fee. Recovered = the payment's USD amount
    when a failed payment is moved to an eligible card.
 
-## 5. Decision API interaction
+## 4. Decision API interaction
 
 ### Endpoint
 
@@ -263,7 +228,7 @@ Response from the real nimble:
 | `answers.reason_code.probabilities` | `probabilities` | "Decision probabilities" bars |
 | `answers.reason_code.confidence` | `confidence` | Returned by the API (bars are shown instead) |
 
-## 6. How the answer is used
+## 5. How the answer is used
 
 `card_optimizer.recommend` treats nimble's answer as final:
 
@@ -276,7 +241,7 @@ Response from the real nimble:
   (IE) ****3310 under the secure corporate payment exemption."
 - **Money.** `fees_saved_usd` and `recovered_usd` come from `corridor.savings` for nimble's chosen card.
 
-## 7. Fallbacks and errors
+## 6. Fallbacks and errors
 
 ```mermaid
 flowchart LR
@@ -298,32 +263,7 @@ The gemma3 fallback asks for `reason_code` (enum of the four codes) and `recomme
 in one JSON-schema call at temperature 0. Every recommendation returns `source`, `model`, `route` and `notes`,
 so the UI shows which path answered and why.
 
-## 8. Design decisions and real-model results
-
-Results of `scripts/check_card_decisions.py` against the real nimble:
-
-| Version | Request design | Agreement with rules | What went wrong |
-| --- | --- | --- | --- |
-| `3f55f33` to `1548ef4` | One call, both questions; reason question "what is wrong with this payment?" | 5/8 | Every settled payment came back `NO_CHANGE` (Bloomberg 0.96), although nimble's own card pick saved 246 USD |
-| `3d4e5e8` | Two calls: card, then "what does this switch fix?" | (reported) | Payments saving on both fees came back `INTER-REGIONAL_ROUTING` |
-| `d21d6f0` | Switch shows FX and cross-border saving separately | **8/8** | Bloomberg correct at 0.61, with 0.39 on SCA |
-
-Decisions:
-
-1. **Facts, not answers.** nimble sees what an analyst would see: decline text, countries, what each card holds,
-   its exemption and fees. It never sees the rule answer, eligibility verdicts or a "best card" label. Tests
-   enforce this (section 10).
-2. **Two calls.** nimble scores each question independently and on its own, "what's wrong?" judged mostly from
-   the status: settled read as fine. Asking about a concrete switch, after nimble picked the card, gave it a
-   question it answers well. Call 1 was already right for 8/8 payments.
-3. **Arithmetic is done for it.** A decision model compares, it doesn't calculate. So fees, fee differences and
-   the FX/cross-border split are given as numbers; which reason they add up to is nimble's call.
-4. **No overrides.** The rule engine is a visible second opinion. An earlier version replaced a contradicting
-   `NO_CHANGE` with the rule's answer; that was removed so the demo shows nimble's real judgement.
-5. **One question per call.** The API accepts up to 64 questions per call, but the reason question depends on the
-   card answer, so they can't share a call.
-
-## 9. API contract
+## 7. API contract
 
 `GET /api/card-optimizer/payments` returns `{cards, payments, recommendations}`. Each payment:
 
@@ -368,7 +308,7 @@ Unknown id returns 404. Recommendations are kept in memory (`RECOMMENDATIONS` in
 `DELETE /api/card-optimizer/recommendations` clears them and returns `{"cleared": n}`; the UI's **Reset demo**
 button calls it.
 
-## 10. Tests
+## 8. Tests
 
 Run from `backend/`; no Ollama needed (every model call is faked):
 
@@ -396,7 +336,7 @@ python3 scripts/check_card_decisions.py
 prints nimble's choice, the rule answer and the probabilities per payment, and writes the full responses to
 `scripts/card_decisions.json` (git-ignored).
 
-## 11. Review checklist and limitations
+## 9. Review checklist and limitations
 
 Review points:
 
