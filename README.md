@@ -393,25 +393,6 @@ python3 ../scripts/check_liquidity_decisions.py   # with the app running: Liquid
 python3 ../scripts/check_horizon.py               # with the app running: Strategic Horizon on Timestral
 ```
 
-## Current limitations
-
-- Dispute cases and generated PDFs live in memory and are cleared when the backend restarts; only evidence
-  embeddings persist (in Chroma). There is no case database yet; the schemas are documented in [docs/ARCHITECTURE.md § 7](docs/ARCHITECTURE.md#7-data-model-and-schemas).
-- Image embedding uses `/api/embed` with `{"text": "", "image": <base64 JPEG>}` items. Ollama's model page doesn't
-  document the image request format, so this needs confirming against a real Ollama install.
-- Scoring weights, the image margin (`IMAGE_MARGIN`) and thresholds are hand-tuned; re-check them on real output
-  with `scripts/check_image_embeddings.py`.
-- No OCR engine: a scanned PDF has no text layer and isn't rasterised, so upload it as a JPEG to have gemma3 read
-  it as a photo.
-- Card Optimizer FX rates, card fees and the 10 USD saving threshold are mock values in
-  `backend/app/data/transactions/cross_border.py`; recommendations are kept in memory.
-- Liquidity Guard bills, balance, buffer and cash flows are mock values in
-  `backend/app/data/transactions/recurring.py`; the forecast is a straight-line run-rate, and classifications are
-  kept in memory.
-- No authentication; this is a local demo.
-- Stored vectors are tagged with the embedding model name and re-embedded if `OLLAMA_EMBED_MODEL` changes. To
-  wipe them, run `docker compose down -v` (removes the `chroma-data` volume).
-
 ## Author
 
 Built by **Rajat Rao** ([@rajatrao](https://github.com/rajatrao)).
