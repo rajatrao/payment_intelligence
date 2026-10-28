@@ -71,7 +71,7 @@ backend/app/
 │       ├── disputes.py         Auto-Dispute Concierge dataset (live)
 │       ├── cross_border.py     Card Optimizer dataset and card portfolio (live)
 │       ├── recurring.py        Liquidity Guard dataset: upcoming bills, three bank accounts, cash flows (live)
-│       └── ledger.py           Strategic Horizon dataset: 180-day reserve ledger and 30-day calendar covariates
+│       └── ledger.py           Strategic Horizon dataset: 180-day ledgers for the three accounts and 30-day calendar covariates
 └── services/
     ├── extraction.py       File-type detection, PDF text layer (pypdf, no OCR), chunking
     ├── ollama_client.py    Async Ollama client: EmbeddingGemma 2 embeddings, gemma3 letters and JSON, nimble decisions
@@ -164,8 +164,8 @@ frontend/src/
 └── modules/
     ├── AutoDisputeConcierge.jsx   Auto-Dispute Concierge view: queue, detail, evidence, match, PDF preview
     ├── CardOptimizer.jsx          Card Optimizer view: metric donuts, payment queue, recommendation, card options
-    ├── LiquidityGuard.jsx         Liquidity Guard: Tactical Ledger Guard / Strategic Horizon Engine toggle; tactical view: totals, account donuts, bill queue, line classifications, cash timeline
-    └── StrategicHorizon.jsx       Strategic Horizon Engine: corridor chart, floor, breach alert, sweep, daily values
+    ├── LiquidityGuard.jsx         Liquidity Guard: left-side tabs for Tactical Ledger Guard / Strategic Horizon Engine, one selected account across both; tactical view: totals, account donuts, bill queue, line classifications, cash timeline
+    └── StrategicHorizon.jsx       Strategic Horizon Engine: account cards, corridor chart, floor, breach alert, sweep, daily values
 ```
 
 ```mermaid
@@ -882,9 +882,9 @@ segments), then a charge history that moved more than 10%.
 
 ### Strategic Horizon
 
-A second view of the module forecasts the operating reserve 30 days ahead. `horizon.run_forecast()` sends 180 days
-of balances and five known-future covariates (payroll day, month start, weekend, lull, month end) to Timestral
-(`mistralai/Timestral-209M`, loaded in the backend at startup) and reads its 0.1, 0.5 and 0.9 quantiles. P10 below
-the 50,000 USD floor gives the breach day and a sweep sized from the shortfall; executing it is simulated. Details,
-the call and the response are in [LIQUIDITY_GUARD.md § 8](LIQUIDITY_GUARD.md#8-strategic-horizon-forecast).
+A second view of the module forecasts the same three accounts 30 days ahead. `horizon.run_forecast()` sends each
+account's 180 days of balances and six known-future covariates (payroll, bill and top-up day, weekend, lull, month
+end) to Timestral (`mistralai/Timestral-209M`, loaded in the backend at startup) in one batch and reads its 0.1, 0.5
+and 0.9 quantiles. P10 below the account's minimum buffer gives the breach day and a sweep sized from the
+shortfall; executing it is simulated. Details, the call and the response are in [LIQUIDITY_GUARD.md § 8](LIQUIDITY_GUARD.md#8-strategic-horizon-forecast).
 

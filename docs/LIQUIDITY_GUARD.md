@@ -1,7 +1,7 @@
 # Liquidity Guard Blueprint
 
 Guide to the Liquidity Guard module: how upcoming auto-debits are classified and forecast, exactly what is sent to
-Ollama's decision API and what comes back, the Strategic Horizon cash forecast with Timestral, and how it is tested. For the whole system see
+Ollama's decision API and what comes back, the Strategic Horizon cash forecast for each account with Timestral, and how it is tested. For the whole system see
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Contents
@@ -288,83 +288,113 @@ button calls it.
 
 ## 8. Strategic Horizon forecast
 
-The Liquidity Guard tab has two views: **Tactical Ledger Guard** (bills, accounts and cash timeline, sections 1 to
-7) and **Strategic Horizon Engine**, a 30-day probabilistic forecast for the operating reserve account.
+The Liquidity Guard tab has two views, picked from the tabs on the left: **Tactical Ledger Guard** (bills, accounts
+and cash timeline, sections 1 to 7) and **Strategic Horizon Engine**, a 30-day probabilistic forecast for the same
+three accounts. Each account's minimum buffer is its floor, and the selected account stays selected when switching
+views.
 
 ```mermaid
 flowchart LR
-    ledger["ledger.py<br/>180 days of balances<br/>+ calendar covariates"] --> run["horizon.run_forecast()"]
-    run -- "context (1, 1, 180)<br/>known covariates (1, 5, 210)" --> ts["Timestral-209M<br/>in the backend, CPU"]
-    ts -- "quantiles 0.1 · 0.5 · 0.9" --> build["horizon.build()<br/>corridor · breach · sweep"]
+    ledger["ledger.py<br/>180 days of balances per account<br/>+ calendar covariates"] --> run["horizon.run_forecast()"]
+    run -- "context (3, 1, 180)<br/>known covariates (3, 6, 210)" --> ts["Timestral-209M<br/>in the backend, CPU"]
+    ts -- "quantiles 0.1 · 0.5 · 0.9<br/>per account" --> build["horizon.build()<br/>corridor · breach · sweep"]
     run -. "not installed / still loading / slower than 20 s" .-> stat["statistical fallback<br/>seasonal day-type model"]
     stat --> build
-    build --> ui["StrategicHorizon.jsx<br/>corridor chart"]
+    build --> ui["StrategicHorizon.jsx<br/>account cards · corridor chart"]
 ```
 
-**Data** (`backend/app/data/transactions/ledger.py`, fixed seed, so every run is the same):
+**Data** (`backend/app/data/transactions/ledger.py`, fixed seed, so every run is the same). Every account's
+history covers 2 May to 28 Oct 2026 and closes at the balance the Tactical view shows today:
 
-| Series | Content |
-| --- | --- |
-| History | 180 end-of-day balances of the operating reserve ****6604, 2 May to 28 Oct 2026, closing at 88,000 USD. Built from bi-weekly payroll (61,500 USD every other Friday), noisy card settlement inflows on business days (heavier at month end, 20% lighter in lulls), daily ACH outflows, rent on the 1st, quarterly tax on 15 Jun and 15 Sep, one past sweep in from the money market, and an August lull. The reserve drifts down over the six months. |
-| Known covariates | Five 0/1 rows over the 180 days and the 30 ahead: `payroll_day`, `month_start`, `weekend`, `lull`, `month_end`. The next 30 days hold payroll on 6 and 20 Nov and the Thanksgiving lull 23 to 27 Nov. |
+| Account | Today | Floor | What moves it |
+| --- | --- | --- | --- |
+| Operating account ****2210 | 240,000 USD | 75,000 USD | Customer receipts every business day (60% heavier at month end, 20% lighter in a lull), ACH vendor outflows, payroll 98,000 USD on the 1st and 15th, Google Cloud, Salesforce and the coworking office on the 1st, Snowflake on the 5th, top-ups out to card settlement on the 20th and marketing on the 25th |
+| Card settlement ****7731 | 135,000 USD | 60,000 USD | The corporate card statement, AWS and Twilio on the 2nd, Datadog on the 3rd, Slack on the 14th, small card fees, the top-up from operating on the 20th |
+| Marketing account ****4408 | 70,000 USD | 20,000 USD | Agency retainer on the 1st, Meta Ads on the 3rd, Google Ads on the 4th, LinkedIn on the 6th, pay-as-you-go ad spend, the top-up from operating on the 25th |
 
-**Timestral call** (`horizon._timestral`), as documented by Mistral for `TimestralForecaster`:
+The recurring bills debit on the same day of the month as in `recurring.py`, and their last three debits are the
+three cycles of history listed there; earlier months continue the same trend backwards. Bills grow faster than
+the top-ups, so card settlement and marketing drift towards their floors.
+
+**Known covariates.** Six 0/1 rows per account over the 180 days and the 30 ahead: `payroll_day`, `bill_day`,
+`funding_day` (a top-up in or out), `weekend`, `lull` and `month_end`. The next 30 days hold payroll on 1 and 15
+Nov, each account's bill days, the top-ups on 20 and 25 Nov and the Thanksgiving lull 23 to 27 Nov. The calendar
+says which days are scheduled; it never says how much is due.
+
+**Timestral call** (`horizon._timestral`), one batch for all three accounts, as documented by Mistral for
+`TimestralForecaster`:
 
 ```python
 model = TimestralForecaster.from_pretrained("mistralai/Timestral-209M")   # FORECAST_MODEL
-out = model.forecast(context,                        # balances, shape (1, 1, 180)
+out = model.forecast(context,                        # balances, shape (3, 1, 180): one series per account
                      prediction_length=30,
-                     known_covariates=known)         # calendar, shape (1, 5, 210) = history + horizon
-p10, p50, p90 = out.quantile(0.1), out.quantile(0.5), out.quantile(0.9)   # each (1, 1, 30)
+                     known_covariates=known)         # calendar, shape (3, 6, 210) = history + horizon
+p10, p50, p90 = out.quantile(0.1), out.quantile(0.5), out.quantile(0.9)   # each (3, 1, 30)
 ```
 
 Timestral returns 21 quantile levels; the engine reads the 0.1, 0.5 and 0.9 levels. Only the balances and the
 calendar are sent: no amounts behind the calendar, no fallback result and no floor.
 
 **Fallback.** If the `timestral` package is not installed, the weights are still loading, or the call takes longer
-than `FORECAST_TIMEOUT_SECONDS` (20), `statistical_forecast` computes the same three arrays: it learns the mean and
-spread of ordinary daily flows by kind of day (normal, month end, lull) and the payroll and rent amounts from the
-ledger, accumulates them over the calendar, and sets P10/P90 at ±1.2816 standard deviations. The response then
+than `FORECAST_TIMEOUT_SECONDS` (20), `statistical_forecast` computes the same three arrays for each account. It
+learns the mean and spread of the unscheduled business-day flow by kind of day (normal, month end, lull), and for
+each scheduled flow (payroll, each bill, each top-up) the next amount on its linear trend and the spread around that
+trend. It accumulates them over the calendar and sets P10/P90 at ±1.2816 standard deviations. The response then
 says `"source": "statistical fallback"` with the reason in `notes`, and the UI shows an amber "Statistical fallback
 in use, not Timestral" banner. A fallback answer is not cached, so the next request tries Timestral again; a
 Timestral answer is cached until **Reset**.
 
-**Breach and sweep.** The first day P10 falls below the 50,000 USD corporate floor is the breach day. The
-recommended pre-emptive sweep covers the P10 shortfall plus 5,000 USD of headroom, in 5,000 USD steps, from the
-treasury money market ****9120 on the business day before the breach. **Execute AI Recommended Pre-Emptive
-Sweep** records it and adds it to every quantile from that date. It is simulated: no money moves.
+**Breach and sweep.** The first day an account's P10 falls below its floor is the breach day. The recommended
+pre-emptive sweep covers the P10 shortfall plus 5,000 USD of headroom, in 5,000 USD steps, from the treasury money
+market ****9120 on the business day before the breach. **Execute AI Recommended Pre-Emptive Sweep** records it for
+that account and adds it to every quantile from that date. It is simulated: no money moves.
 
-With the fallback, P10 falls to 44,016 USD on day 23 (20 Nov, the second payroll) while the median stays at
-59,769 USD; the recommended sweep is 15,000 USD on 19 Nov, after which P10 stays above the floor. Timestral's
-numbers will differ: run `scripts/check_horizon.py` to see them.
+With the fallback the Strategic view agrees with the classified Tactical view on which accounts are at risk:
 
-`GET /api/liquidity-guard/forecast` (also served at `/api/liquidity/forecast`):
+| Account | P10 low | Breach (P10 below floor) | Median at the breach | Recommended sweep |
+| --- | --- | --- | --- | --- |
+| Operating | 146,519 USD | none | | none |
+| Card settlement | 52,570 USD | day 6, 3 Nov (57,360 USD) | 65,411 USD | 15,000 USD on 2 Nov |
+| Marketing | 18,419 USD | day 9, 6 Nov (19,763 USD) | 22,069 USD | 10,000 USD on 5 Nov |
+
+Timestral's numbers will differ: run `scripts/check_horizon.py` to see them.
+
+`GET /api/liquidity-guard/forecast?account_id=acct_cards` (also served at `/api/liquidity/forecast`; without
+`account_id` it answers for the operating account):
 
 ```json
 {
-  "account": {"id": "acct_reserve", "name": "Operating reserve (USD) ****6604", "floor": 50000.0,
+  "account": {"id": "acct_cards", "name": "Card settlement (USD) ****7731", "balance": 135000.0, "floor": 60000.0,
               "sweep_source": "Treasury money market (USD) ****9120", "...": "..."},
-  "floor": 50000.0, "horizon_days": 30, "history_days": 180,
-  "history": {"dates": ["2026-05-02", "..."], "balance": [221529.6, "..."]},
+  "floor": 60000.0, "horizon_days": 30, "history_days": 180,
+  "history": {"dates": ["2026-05-02", "..."], "balance": [71440.24, "..."]},
   "dates": ["2026-10-29", "..."],
-  "p10": [93655.12, "..."], "p50": [98431.68, "..."], "p90": [103208.24, "..."],
-  "covariates": {"payroll_day": [0, "..."], "month_start": [0, "..."], "weekend": [0, "..."], "lull": [0, "..."],
-                 "month_end": [1, "..."]},
-  "breach": {"day": 23, "date": "2026-11-20", "p10": 44015.64, "p50": 59769.27, "median_breach": false},
-  "recommended_sweep": {"amount": 15000.0, "date": "2026-11-19", "from": "Treasury money market (USD) ****9120",
-                        "to": "Operating reserve (USD) ****6604", "covers_shortfall": 5984.36},
+  "p10": [133910.23, "..."], "p50": [134895.24, "..."], "p90": [135880.25, "..."],
+  "covariates": {"payroll_day": [0, "..."], "bill_day": [0, 0, 0, 0, 1, 1, "..."], "funding_day": [0, "..."],
+                 "weekend": [0, 0, 1, 1, "..."], "lull": [0, "..."], "month_end": [1, 1, 0, "..."]},
+  "events": [[], [], [], [], ["Corporate card statement (Visa)", "Amazon Web Services", "Twilio Inc."],
+             ["Datadog, Inc."], "..."],
+  "breach": {"day": 6, "date": "2026-11-03", "p10": 57359.75, "p50": 65411.28, "median_breach": false},
+  "recommended_sweep": {"account_id": "acct_cards", "amount": 15000.0, "date": "2026-11-02",
+                        "from": "Treasury money market (USD) ****9120", "to": "Card settlement (USD) ****7731",
+                        "covers_shortfall": 7430.15},
   "executed_sweep": null,
+  "accounts": [{"id": "acct_operating", "p10_low": 146519.27, "breach": null, "sweep": null, "...": "..."},
+               {"id": "acct_cards", "p10_low": 52569.85, "breach": {"date": "2026-11-03", "...": "..."}, "...": "..."},
+               {"id": "acct_marketing", "p10_low": 18419.07, "breach": {"date": "2026-11-06", "...": "..."}, "...": "..."}],
   "source": "statistical fallback", "model": "seasonal day-type model", "route": null,
   "notes": ["Timestral unavailable: the timestral package is not installed (…). Quantiles computed by the statistical fallback."]
 }
 ```
 
 These numbers are the fallback's. When Timestral answers, `source` is `"forecast model"`, `model` is
-`"mistralai/Timestral-209M"`, `route` is `"timestral (local)"` and `notes` is empty.
+`"mistralai/Timestral-209M"`, `route` is `"timestral (local)"` and `notes` is empty. `accounts` carries a summary
+and the three arrays for every account; the UI draws the account cards and their sparklines from it.
 
-`POST /api/liquidity-guard/forecast/sweep` executes the recommended sweep and returns the updated forecast (409 if
-P10 already clears the floor). `DELETE /api/liquidity-guard/forecast` drops the sweep and the cached forecast.
-`GET /api/health` reports `forecast.status`: `not loaded`, `loading`, `ready` or `unavailable` with the error.
+`POST /api/liquidity-guard/forecast/sweep?account_id=…` executes that account's recommended sweep and returns the
+updated forecast (409 if P10 already clears the floor or a sweep is already scheduled). `DELETE
+/api/liquidity-guard/forecast` drops every sweep and the cached forecast. `GET /api/health` reports
+`forecast.status`: `not loaded`, `loading`, `ready` or `unavailable` with the error.
 
 ## 9. Tests
 
@@ -380,7 +410,7 @@ python -m pytest -q
 | --- | --- |
 | `tests/test_liquidity.py` | The rule on all 26 lines, including on-demand above a commitment; parsing the string amounts; run-rate for variable lines only; every bill on one account; the unclassified forecast (no breach) and the classified one (card settlement below buffer on 3 Nov, marketing on 6 Nov, operating safe, exact totals); timeline order and running balance per account; payroll and receipts on the operating account only; estimates for unclassified bills; one `noul` question per line with no rule answer in the request; the 0.5 threshold; a disagreement shown, not corrected; a missing line falls back to gemma3; no models falls back to the rule |
 | `tests/test_api.py` | Liquidity Guard listed as live; bills start unclassified; classify stores the result and updates the forecast; reset clears it; unknown bill 404 |
-| `tests/test_horizon.py` | 180 repeatable days ending today; payroll every other Friday; the calendar's payroll and lull days; Timestral gets the (1, 1, 180) history and (1, 5, 210) covariates for 30 days; missing or slow Timestral falls back with a note; fallback quantiles ordered and widening; P10 breach on day 23 and a 15,000 USD sweep; the sweep lifts the corridor from its date; no sweep when the floor is clear; both forecast paths; a Timestral result is cached and a fallback is not; sweep then reset; sweep refused when not needed |
+| `tests/test_horizon.py` | The same three accounts, balances and buffers as the Tactical view; 180 repeatable days per account ending at today's balance; bills on their debit day with the last three cycles from the bill history; payroll on the 1st and 15th on operating only, top-ups equal on both sides; the calendar's payroll, bill and lull days; Timestral gets all three accounts in one (3, 1, 180) batch with (3, 6, 210) covariates; missing or slow Timestral falls back with a note; fallback quantiles ordered and widening; card settlement breaches on 3 Nov and marketing on 6 Nov while operating stays clear, with a 15,000 USD sweep on 2 Nov; a sweep lifts only its account from its date; no sweep when the floor is clear; both forecast paths and an unknown account; a Timestral result is cached and a fallback is not; sweep per account, refused twice, then reset; sweep refused when not needed |
 
 Against the real model, with the app running:
 
@@ -393,4 +423,4 @@ line and the forecast they add up to, and writes the full responses to `scripts/
 (git-ignored).
 
 For the forecast, `python3 scripts/check_horizon.py` clears the cached forecast, asks for a fresh one, prints
-which engine answered and the corridor day by day, and writes `scripts/horizon_forecast.json` (git-ignored).
+which engine answered and each account's corridor day by day, and writes `scripts/horizon_forecast.json` (git-ignored).

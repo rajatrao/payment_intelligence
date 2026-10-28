@@ -32,6 +32,7 @@ from app.data.transactions.cross_border import CARD_PORTFOLIO
 from app.services import liquidity
 from app.services.liquidity_guard import classify, flat
 from app.services import horizon
+from app.data.transactions import ledger
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("api")
@@ -411,8 +412,9 @@ async def liquidity_reset():
 
 # ---------------------------------------------------------------- liquidity guard: strategic horizon
 
-# The engine's quantiles are computed once and reused until reset; an executed sweep is layered on top.
-HORIZON: dict = {"raw": None, "sweep": None}
+# The engine's quantiles (all accounts, one batch) are computed once and reused until reset; executed sweeps are
+# layered on top, at most one per account.
+HORIZON: dict = {"raw": None, "sweeps": {}}
 _HORIZON_LOCK = asyncio.Lock()
 
 
@@ -427,29 +429,37 @@ async def _horizon_raw() -> dict:
         return raw
 
 
+def _horizon_account(account_id: str) -> str:
+    if account_id not in ledger.ACCOUNT_IDS:
+        raise HTTPException(404, f"Unknown account {account_id}")
+    return account_id
+
+
 @app.get("/api/liquidity-guard/forecast")
 @app.get("/api/liquidity/forecast")
-async def liquidity_forecast():
-    """30-day P10/P50/P90 cash corridor for the operating reserve (Timestral, or the statistical fallback)."""
-    return horizon.build(await _horizon_raw(), HORIZON["sweep"])
+async def liquidity_forecast(account_id: str = "acct_operating"):
+    """30-day P10/P50/P90 cash corridor for one account (Timestral, or the statistical fallback)."""
+    return horizon.build(await _horizon_raw(), _horizon_account(account_id), HORIZON["sweeps"])
 
 
 @app.post("/api/liquidity-guard/forecast/sweep")
-async def liquidity_sweep():
-    """Execute the recommended pre-emptive sweep (simulated: recorded and added to the forecast)."""
+async def liquidity_sweep(account_id: str = "acct_operating"):
+    """Execute the recommended pre-emptive sweep into one account (simulated: recorded and added to the forecast)."""
     raw = await _horizon_raw()
-    plan = horizon.plan_sweep(raw)
+    plan = horizon.plan_sweep(raw, _horizon_account(account_id))
+    if account_id in HORIZON["sweeps"]:
+        raise HTTPException(409, "A sweep into this account is already scheduled.")
     if plan is None:
         raise HTTPException(409, "The P10 forecast stays above the floor; no sweep is needed.")
-    HORIZON["sweep"] = {**plan, "executed_at": datetime.now(timezone.utc).isoformat(), "simulated": True}
-    return horizon.build(raw, HORIZON["sweep"])
+    HORIZON["sweeps"][account_id] = {**plan, "executed_at": datetime.now(timezone.utc).isoformat(), "simulated": True}
+    return horizon.build(raw, account_id, HORIZON["sweeps"])
 
 
 @app.delete("/api/liquidity-guard/forecast")
 async def liquidity_forecast_reset():
-    """Drop the executed sweep and the cached forecast, so the next request runs the engine again."""
-    cleared = {"sweep": HORIZON["sweep"] is not None, "forecast": HORIZON["raw"] is not None}
-    HORIZON.update(raw=None, sweep=None)
+    """Drop the executed sweeps and the cached forecast, so the next request runs the engine again."""
+    cleared = {"sweeps": len(HORIZON["sweeps"]), "forecast": HORIZON["raw"] is not None}
+    HORIZON.update(raw=None, sweeps={})
     return {"cleared": cleared}
 
 

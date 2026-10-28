@@ -141,15 +141,16 @@ Before classification the forecast only counts what has been billed so far, and 
 Classifying the bills shows the usage lines will keep growing to the end of the cycle: the card settlement account
 drops below its buffer on 3 Nov and the marketing account on 6 Nov, while the operating account stays safe.
 
-That is the **Tactical Ledger Guard** view. The **Strategic Horizon Engine** view forecasts the operating reserve
-30 days ahead:
+That is the **Tactical Ledger Guard** view. The **Strategic Horizon Engine** view, on the second tab on the left,
+forecasts the same three accounts 30 days ahead, each against its minimum buffer as its floor:
 
-1. **History and calendar.** 180 days of end-of-day balances (bi-weekly payroll, noisy card settlement inflows,
-   rent, tax and seasonal lulls) and a calendar of known-future covariates: payroll days, month start and end,
-   weekends and lulls.
+1. **History and calendar.** 180 days of end-of-day balances per account (customer receipts, payroll on the 1st
+   and 15th, the recurring bills on their debit days, top-ups between accounts and seasonal lulls) and a calendar
+   of known-future covariates: payroll, bill and top-up days, month end, weekends and lulls.
 2. **Timestral.** Mistral's time-series model (`mistralai/Timestral-209M`) runs inside the backend on CPU and
-   returns quantiles for each of the next 30 days. The 10th, 50th and 90th percentiles form an 80% safety corridor.
-3. **Floor and sweep.** If P10 falls below the 50,000 USD corporate floor, an alert names the day and recommends a
+   returns quantiles for each of the next 30 days, for all three accounts in one batch. The 10th, 50th and 90th
+   percentiles form an 80% safety corridor.
+3. **Floor and sweep.** If an account's P10 falls below its floor, an alert names the day and recommends a
    pre-emptive sweep from the treasury money market, sized from the P10 shortfall. Executing it is simulated.
 4. **Fallback.** If Timestral isn't installed, is still loading or is too slow, a statistical model computes the
    corridor instead, and the view says so in an amber banner.
@@ -268,10 +269,12 @@ back to the embedding alone, and the package is built with a clearly labelled te
     classify that account's bills; its donut fills in and grows as each one is classified. Do the same for each
     account: Meta Ads and AWS are flagged as spikes, card settlement falls below its buffer on 3 Nov and marketing
     on 6 Nov, while the operating account stays safe. Click **Reset** to start again.
-11. Switch to **Strategic Horizon Engine**. The chart shows the last 60 days of the reserve, then the P50 median
-    inside the amber P10 to P90 corridor, against the red 50,000 USD floor. Hover a day for its three values. The
-    alert names the day P10 breaches the floor; click **Execute AI Recommended Pre-Emptive Sweep** and the corridor
-    lifts above it from the sweep date. Check the card header: it names Timestral, or shows the fallback banner.
+11. Switch to **Strategic Horizon Engine** in the tabs on the left; the same account stays selected. Each account
+    card shows a sparkline of its corridor against its floor. Card settlement and marketing breach (3 and 6 Nov,
+    the same accounts as the Tactical view) while operating stays clear. The chart shows the last 60 days of the
+    account, then the P50 median inside the amber P10 to P90 corridor, against the red floor. Hover a day for its
+    three values and what is scheduled. Click **Execute AI Recommended Pre-Emptive Sweep** and the corridor lifts
+    above the floor from the sweep date. Check the card header: it names Timestral, or shows the fallback banner.
 
 ## Configuration
 
@@ -341,9 +344,9 @@ The full list is in [docs/ARCHITECTURE.md § 12](docs/ARCHITECTURE.md#12-configu
 | GET | `/api/liquidity-guard/bills` | Upcoming bills with line forecasts, the cash timeline, totals and classifications so far |
 | POST | `/api/liquidity-guard/bills/{id}/classify` | Ask the decision model which lines are variable usage-based (checked against the rule) |
 | DELETE | `/api/liquidity-guard/classifications` | Clear all classifications (the **Reset** button) |
-| GET | `/api/liquidity-guard/forecast` | 30-day P10/P50/P90 corridor, floor breach and recommended sweep (also at `/api/liquidity/forecast`) |
-| POST | `/api/liquidity-guard/forecast/sweep` | Execute the recommended pre-emptive sweep (simulated) |
-| DELETE | `/api/liquidity-guard/forecast` | Drop the sweep and the cached forecast (the Strategic Horizon **Reset** button) |
+| GET | `/api/liquidity-guard/forecast?account_id=` | One account's 30-day P10/P50/P90 corridor, floor breach and recommended sweep, plus a summary of every account (also at `/api/liquidity/forecast`) |
+| POST | `/api/liquidity-guard/forecast/sweep?account_id=` | Execute that account's recommended pre-emptive sweep (simulated) |
+| DELETE | `/api/liquidity-guard/forecast` | Drop the sweeps and the cached forecast (the Strategic Horizon **Reset** button) |
 
 ## Local development without Docker
 

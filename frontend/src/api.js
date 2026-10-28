@@ -47,8 +47,14 @@ export const api = {
     fetch(`${BASE}/api/liquidity-guard/bills/${billId}/classify`, { method: "POST" }).then(json),
   resetClassifications: () =>
     fetch(`${BASE}/api/liquidity-guard/classifications`, { method: "DELETE" }).then(json),
-  horizonForecast: () => fetch(`${BASE}/api/liquidity-guard/forecast`).then(json),
-  executeSweep: () => fetch(`${BASE}/api/liquidity-guard/forecast/sweep`, { method: "POST" }).then(json),
+  horizonForecast: (accountId) =>
+    fetch(`${BASE}/api/liquidity-guard/forecast${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`).then(
+      json,
+    ),
+  executeSweep: (accountId) =>
+    fetch(`${BASE}/api/liquidity-guard/forecast/sweep?account_id=${encodeURIComponent(accountId)}`, {
+      method: "POST",
+    }).then(json),
   resetForecast: () => fetch(`${BASE}/api/liquidity-guard/forecast`, { method: "DELETE" }).then(json),
   packageUrl: (path, download = false) => `${BASE}${path}${download ? "?download=true" : ""}`,
 };

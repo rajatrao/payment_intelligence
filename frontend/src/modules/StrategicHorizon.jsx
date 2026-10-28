@@ -10,7 +10,9 @@ const day = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", { m
 // Chart colours: teal median, amber corridor, slate history, red floor (status colour, always labelled).
 const C = { p50: "#0d9488", band: "#f59e0b", history: "#64748b", floor: "#dc2626", grid: "#e2e8f0" };
 const HISTORY_SHOWN = 60;
-const TAGS = { payroll_day: "payroll", month_start: "month start", month_end: "month end", lull: "lull" };
+// Marked on the chart: the kinds of scheduled day the engine is told about in advance.
+const MARKS = { payroll_day: "payroll", bill_day: "bills", funding_day: "top-up" };
+const short = (name) => name.split(" (")[0].replace(/ account$/, "");
 
 function Stat({ label, value, tone = "" }) {
   return (
@@ -22,9 +24,65 @@ function Stat({ label, value, tone = "" }) {
 }
 
 function tagsFor(f, i) {
-  return Object.entries(TAGS)
-    .filter(([k]) => f.covariates[k][i])
-    .map(([, label]) => label);
+  return [
+    ...f.events[i],
+    ...(f.covariates.month_end[i] ? ["month end"] : []),
+    ...(f.covariates.lull[i] ? ["lull"] : []),
+  ];
+}
+
+function Sparkline({ a }) {
+  const W = 160, H = 40;
+  const all = [...a.p10, ...a.p90, a.floor, a.balance];
+  const lo = Math.min(...all), hi = Math.max(...all);
+  const x = (i) => (i / a.p50.length) * W;
+  const y = (v) => 2 + (1 - (v - lo) / (hi - lo || 1)) * (H - 4);
+  const pts = (vals) => [a.balance, ...vals].map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const band = [...pts(a.p90), ...pts(a.p10).reverse()].join(" ");
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="mt-2 h-10 w-full" aria-hidden="true">
+      <polygon points={band} fill={C.band} fillOpacity="0.25" />
+      <polyline points={pts(a.p50).join(" ")} fill="none" stroke={C.p50} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      <line x1="0" x2={W} y1={y(a.floor)} y2={y(a.floor)} stroke={C.floor} strokeWidth="1" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+function AccountCard({ a, selected, onSelect }) {
+  return (
+    <button
+      onClick={onSelect}
+      className={`card w-full p-3 text-left transition ${selected ? "ring-2 ring-slate-900" : "hover:ring-1 hover:ring-slate-300"}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 truncate text-xs font-semibold">{a.name}</div>
+        {a.breach ? (
+          <span className="tag tag-red shrink-0">P10 below floor {day(a.breach.date)}</span>
+        ) : a.sweep ? (
+          <span className="tag tag-green shrink-0">sweep {day(a.sweep.date)}</span>
+        ) : (
+          <span className="tag tag-green shrink-0">above floor</span>
+        )}
+      </div>
+      <Sparkline a={a} />
+      <div className="mt-1 grid grid-cols-3 gap-2 text-[10px] text-slate-500">
+        <div>
+          Today
+          <div className="font-mono text-xs font-semibold tabular-nums text-slate-900">{usd0(a.balance)}</div>
+        </div>
+        <div>
+          P10 low
+          <div className={`font-mono text-xs font-semibold tabular-nums ${a.p10_low < a.floor ? "text-red-600" : "text-emerald-600"}`}>
+            {usd0(a.p10_low)}
+          </div>
+        </div>
+        <div>
+          Floor
+          <div className="font-mono text-xs font-semibold tabular-nums text-slate-900">{usd0(a.floor)}</div>
+        </div>
+      </div>
+    </button>
+  );
 }
 
 function HorizonChart({ f }) {
@@ -56,6 +114,7 @@ function HorizonChart({ f }) {
     .map(([a, b]) => `L${a.toFixed(1)},${b.toFixed(1)}`)
     .join("")}Z`;
   const breachI = f.breach ? f.breach.day - 1 : null;
+  let lastLabel = -99;
 
   const lullRuns = f.dates.map((d, i) => (f.covariates.lull[i] ? i : null)).filter((i) => i != null);
   const onMove = (e) => {
@@ -90,16 +149,23 @@ function HorizonChart({ f }) {
             fill="#f1f5f9"
           />
         )}
-        {f.dates.map((d, i) =>
-          f.covariates.payroll_day[i] ? (
+        {f.dates.map((d, i) => {
+          const kinds = Object.keys(MARKS).filter((k) => f.covariates[k][i]);
+          if (!kinds.length) return null;
+          // Scheduled days a few days apart share the first one's label, so labels never overlap.
+          const first = i - lastLabel >= 4;
+          if (first) lastLabel = i;
+          return (
             <g key={d}>
               <line x1={fx(i)} x2={fx(i)} y1={M.t} y2={H - M.b} stroke="#cbd5e1" strokeDasharray="2 3" />
-              <text x={fx(i)} y={M.t + 10} textAnchor="middle" className="fill-slate-500 text-[10px]">
-                payroll
-              </text>
+              {first && (
+                <text x={fx(i)} y={M.t + 10} textAnchor="middle" className="fill-slate-500 text-[10px]">
+                  {kinds.map((k) => MARKS[k]).join(" + ")}
+                </text>
+              )}
             </g>
-          ) : null,
-        )}
+          );
+        })}
         <line x1={x(last)} x2={x(last)} y1={M.t} y2={H - M.b} stroke="#94a3b8" strokeWidth="1" />
         <text x={x(last) - 4} y={H - M.b - 6} textAnchor="end" className="fill-slate-500 text-[10px]">
           today
@@ -110,7 +176,7 @@ function HorizonChart({ f }) {
         <path d={line(p50, fxi)} fill="none" stroke={C.p50} strokeWidth="2.5" strokeLinejoin="round" />
 
         <line x1={M.l} x2={W - M.r} y1={y(f.floor)} y2={y(f.floor)} stroke={C.floor} strokeWidth="2" />
-        <text x={M.l + 6} y={y(f.floor) - 6} className="fill-red-600 text-[11px] font-semibold">
+        <text x={M.l + 6} y={y(f.floor) + 15} className="fill-red-600 text-[11px] font-semibold">
           Corporate Liquidity Floor ({usd0(f.floor)})
         </text>
 
@@ -204,21 +270,24 @@ function HorizonChart({ f }) {
   );
 }
 
-export default function StrategicHorizon() {
+export default function StrategicHorizon({ accountId, onSelectAccount }) {
   const [f, setF] = useState(null);
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [table, setTable] = useState(false);
 
-  const load = () =>
+  const load = (id = accountId) =>
     api
-      .horizonForecast()
-      .then(setF)
+      .horizonForecast(id)
+      .then((r) => {
+        setF(r);
+        if (!id) onSelectAccount(r.account.id);
+      })
       .catch((e) => setError(`Could not load the forecast: ${e.message}`));
 
   useEffect(() => {
     load();
-  }, []);
+  }, [accountId]);
 
   const run = async (what, call) => {
     setBusy(what);
@@ -231,7 +300,7 @@ export default function StrategicHorizon() {
       setBusy(null);
     }
   };
-  const sweep = () => run("sweep", async () => setF(await api.executeSweep()));
+  const sweep = () => run("sweep", async () => setF(await api.executeSweep(f.account.id)));
   const reset = () =>
     run("reset", async () => {
       await api.resetForecast();
@@ -260,8 +329,8 @@ export default function StrategicHorizon() {
         <div>
           <h1 className="text-lg font-semibold">Strategic Horizon Engine</h1>
           <p className="text-xs text-slate-500">
-            {f.account.name}: 30-day probabilistic cash forecast with an 80% safety corridor (P10 to P90) against the
-            corporate floor.
+            30-day probabilistic cash forecast for each account, with an 80% safety corridor (P10 to P90) against the
+            account's minimum buffer as its floor.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -285,11 +354,18 @@ export default function StrategicHorizon() {
         </div>
       )}
 
+      <div className="grid gap-4 md:grid-cols-3">
+        {f.accounts.map((a) => (
+          <AccountCard key={a.id} a={a} selected={a.id === f.account.id} onSelect={() => onSelectAccount(a.id)} />
+        ))}
+      </div>
+
       {f.breach ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-300 bg-red-50 px-4 py-3">
           <div className="text-xs text-red-800">
             <div className="text-sm font-semibold">
-              System Alert: 80% Safety Corridor Predicts Floor Breach on Day {f.breach.day} ({day(f.breach.date)}).
+              System Alert: 80% Safety Corridor Predicts Floor Breach on Day {f.breach.day} ({day(f.breach.date)}) ·{" "}
+              {short(f.account.name)}.
             </div>
             <div className="mt-0.5">
               P10 falls to {usd0(f.breach.p10)} against the {usd0(f.floor)} floor (median {usd0(f.breach.p50)}).
@@ -315,7 +391,7 @@ export default function StrategicHorizon() {
         </div>
       ) : (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800">
-          The 80% safety corridor stays above the {usd0(f.floor)} floor for all 30 days.
+          {short(f.account.name)}: the 80% safety corridor stays above the {usd0(f.floor)} floor for all 30 days.
         </div>
       )}
 
@@ -389,8 +465,9 @@ export default function StrategicHorizon() {
 
       <div className="card px-4 py-3 text-[11px] text-slate-500">
         Sent to the engine: {f.history_days} days of end-of-day balances and a calendar of known-future covariates
-        (payroll days, month start and end, weekends, lulls) over the history and the {f.horizon_days} days ahead. The
-        corridor, breach day and sweep size are read from the returned quantiles; the sweep is simulated.
+        (payroll, bill and top-up days, month end, weekends, lulls) over the history and the {f.horizon_days} days
+        ahead, for all three accounts in one batch. The engine never sees the amounts due. The corridor, breach day and
+        sweep size are read from the returned quantiles; the sweep is simulated.
       </div>
     </div>
   );

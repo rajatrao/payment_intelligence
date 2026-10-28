@@ -373,10 +373,9 @@ function CashTimeline({ forecast, account, selectedId }) {
   );
 }
 
-function TacticalLedgerGuard() {
+function TacticalLedgerGuard({ accountId, setAccountId }) {
   const [data, setData] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
-  const [accountId, setAccountId] = useState(null);
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
@@ -385,8 +384,9 @@ function TacticalLedgerGuard() {
       .liquidityBills()
       .then((d) => {
         setData(d);
-        setSelectedId((id) => id || d.forecast.bills[0]?.id);
-        setAccountId((id) => id || d.forecast.bills[0]?.account_id);
+        const acct = accountId || d.forecast.bills[0]?.account_id;
+        setAccountId(acct);
+        setSelectedId((id) => id || d.forecast.bills.find((b) => b.account_id === acct)?.id);
       })
       .catch((e) => setError(`Could not load bills: ${e.message}`));
 
@@ -532,29 +532,37 @@ const VIEWS = [
   { id: "strategic", label: "Strategic Horizon Engine", hint: "30-day probabilistic forecast" },
 ];
 
+// One selected account across both views, so switching views keeps the same account in front.
 export default function LiquidityGuard() {
   const [view, setView] = useState("tactical");
+  const [accountId, setAccountId] = useState(null);
   return (
-    <div className="space-y-4">
-      <div role="tablist" className="inline-flex rounded-md border border-slate-200 bg-white p-0.5 text-xs font-medium">
+    <div className="grid gap-4 md:grid-cols-[13rem_minmax(0,1fr)]">
+      <nav role="tablist" aria-orientation="vertical" className="flex gap-1 md:sticky md:top-4 md:flex-col md:self-start">
         {VIEWS.map((v) => (
           <button
             key={v.id}
             role="tab"
             aria-selected={view === v.id}
             onClick={() => setView(v.id)}
-            className={`rounded px-3 py-1.5 transition ${
-              view === v.id ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+            className={`flex-1 rounded-md border-l-2 px-3 py-2 text-left transition md:flex-none ${
+              view === v.id
+                ? "border-slate-900 bg-slate-100 text-slate-900"
+                : "border-transparent text-slate-600 hover:bg-slate-50"
             }`}
           >
-            {v.label}
-            <span className={`ml-2 hidden text-[10px] sm:inline ${view === v.id ? "text-slate-300" : "text-slate-400"}`}>
-              {v.hint}
-            </span>
+            <div className={`text-xs ${view === v.id ? "font-semibold" : "font-medium"}`}>{v.label}</div>
+            <div className="mt-0.5 text-[10px] text-slate-500">{v.hint}</div>
           </button>
         ))}
+      </nav>
+      <div className="min-w-0">
+        {view === "tactical" ? (
+          <TacticalLedgerGuard accountId={accountId} setAccountId={setAccountId} />
+        ) : (
+          <StrategicHorizon accountId={accountId} onSelectAccount={setAccountId} />
+        )}
       </div>
-      {view === "tactical" ? <TacticalLedgerGuard /> : <StrategicHorizon />}
     </div>
   );
 }
